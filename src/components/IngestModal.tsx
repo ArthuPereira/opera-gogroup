@@ -1,13 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  FileSpreadsheet,
-  PlusCircle,
-  Sparkles,
-  Upload,
-  X,
-} from "lucide-react";
+import { FileSpreadsheet, PlusCircle, Upload, X } from "lucide-react";
 import { parseOrdersCsv, QUICK_INGEST_PRESETS } from "@/lib/csv-io";
 import { EXCEPTION_LABELS } from "@/lib/format";
 import { ExceptionType, RawOrder } from "@/lib/types";
@@ -31,7 +25,6 @@ export function IngestModal({
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Manual form state
   const [orderId, setOrderId] = useState(
     () => `GB99${Math.floor(100 + Math.random() * 899)}`
   );
@@ -82,9 +75,7 @@ export function IngestModal({
     setTurno(o.turno);
     setMaquina(o.maquina ?? "");
     setLote(o.lote_produto);
-    setFeedback(
-      `Preset carregado: "${p.title}" — ${p.expectedBehavior}`
-    );
+    setFeedback(null);
     setError(null);
   }
 
@@ -120,12 +111,12 @@ export function IngestModal({
       const res = await onIngestOrders([raw], "manual");
       setFeedback(
         res.autoTriaged > 0
-          ? `✅ Pedido ${raw.order_id} inserido e RESOLVIDO AUTOMATICAMENTE na Auto-Triagem (Zero Fila Humana)! Confira na Aba 3.`
-          : `✅ Pedido ${raw.order_id} inserido na Fila Inteligente do cliente ${raw.customer_id} e recalculado em R$!`
+          ? `Pedido ${raw.order_id} resolvido automaticamente na triagem.`
+          : `Pedido ${raw.order_id} adicionado à fila do cliente ${raw.customer_id}.`
       );
       setOrderId(`GB99${Math.floor(100 + Math.random() * 899)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao inserir pedido");
+      setError(err instanceof Error ? err.message : "Erro ao salvar pedido");
     } finally {
       setIsSubmitting(false);
     }
@@ -142,10 +133,10 @@ export function IngestModal({
       const parsed = parseOrdersCsv(text);
       const res = await onIngestOrders(parsed, "csv_upload");
       setFeedback(
-        `✅ Lote CSV importado (${res.totalAdded} pedidos): ${res.autoTriaged} limpos na Auto-Triagem e ${res.activeAdded} priorizados na Fila Inteligente!`
+        `${res.totalAdded} pedidos importados (${res.autoTriaged} na triagem, ${res.activeAdded} na fila).`
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao ler arquivo CSV");
+      setError(err instanceof Error ? err.message : "Falha ao ler CSV");
     } finally {
       setIsSubmitting(false);
       e.target.value = "";
@@ -153,29 +144,22 @@ export function IngestModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs">
+      <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">
-              Ingestão de Exceções em Tempo Real
-            </h3>
-            <p className="text-xs text-slate-500">
-              Todo novo pedido passa imediatamente pela Auto-Triagem e pelo Motor de Priorização Financeira no seu navegador.
-            </p>
-          </div>
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5">
+          <h3 className="text-sm font-bold text-slate-900">Adicionar Pedidos</h3>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           >
-            <X className="h-5 w-5" />
+            <X className="h-4 w-4" />
           </button>
         </div>
 
         {/* Mode Switch */}
-        <div className="flex gap-2 border-b border-slate-100 bg-slate-50 px-5 py-2.5">
+        <div className="flex gap-2 border-b border-slate-100 bg-slate-50 px-5 py-2">
           <button
             type="button"
             onClick={() => setTab("form")}
@@ -186,7 +170,7 @@ export function IngestModal({
             }`}
           >
             <PlusCircle className="h-3.5 w-3.5" />
-            Formulário Rápido + 4 Presets
+            Cadastro Manual
           </button>
           <button
             type="button"
@@ -198,59 +182,47 @@ export function IngestModal({
             }`}
           >
             <FileSpreadsheet className="h-3.5 w-3.5" />
-            Upload de Arquivo CSV
+            Importar CSV
           </button>
         </div>
 
         <div className="p-5 space-y-4">
           {feedback && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-medium text-emerald-900">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900">
               {feedback}
             </div>
           )}
           {error && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-800">
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
               {error}
             </div>
           )}
 
           {tab === "form" ? (
             <>
-              {/* 4 Quick Evaluator Presets */}
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
-                  <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
-                  Presets de Teste Rápido (1 Clique p/ Preencher):
-                </div>
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {QUICK_INGEST_PRESETS.map((p, idx) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => applyPreset(idx)}
-                      className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5 text-left transition hover:border-indigo-400 hover:bg-indigo-50/50"
-                    >
-                      <span className="inline-block rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-bold text-indigo-800">
-                        {p.badge}
-                      </span>
-                      <div className="mt-1 text-xs font-bold text-slate-900">
-                        {p.title}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-slate-500 line-clamp-2">
-                        {p.expectedBehavior}
-                      </div>
-                    </button>
-                  ))}
-                </div>
+              {/* Compact 1-line Quick Fill Chips */}
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-[11px] font-medium text-slate-400">
+                  Exemplos:
+                </span>
+                {QUICK_INGEST_PRESETS.map((p, idx) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => applyPreset(idx)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-100"
+                  >
+                    {p.title}
+                  </button>
+                ))}
               </div>
 
-              {/* Form */}
               <form
                 onSubmit={handleFormSubmit}
                 className="grid grid-cols-1 gap-3 pt-2 border-t border-slate-100 sm:grid-cols-3 text-xs"
               >
                 <label className="block">
-                  <span className="font-semibold text-slate-700">Order ID</span>
+                  <span className="font-medium text-slate-600">Pedido</span>
                   <input
                     value={orderId}
                     onChange={(e) => setOrderId(e.target.value)}
@@ -260,9 +232,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    Customer ID (VIP ex: CL300014)
-                  </span>
+                  <span className="font-medium text-slate-600">Cliente</span>
                   <input
                     value={customerId}
                     onChange={(e) => setCustomerId(e.target.value)}
@@ -272,7 +242,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">Marca</span>
+                  <span className="font-medium text-slate-600">Marca</span>
                   <select
                     value={marca}
                     onChange={(e) => setMarca(e.target.value)}
@@ -297,9 +267,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    Tipo de Exceção
-                  </span>
+                  <span className="font-medium text-slate-600">Exceção</span>
                   <select
                     value={tipoExcecao}
                     onChange={(e) =>
@@ -318,9 +286,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    Valor Pago (R$)
-                  </span>
+                  <span className="font-medium text-slate-600">Valor (R$)</span>
                   <input
                     type="number"
                     step="0.01"
@@ -332,7 +298,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">SKU</span>
+                  <span className="font-medium text-slate-600">SKU</span>
                   <input
                     value={sku}
                     onChange={(e) => setSku(e.target.value)}
@@ -341,9 +307,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block sm:col-span-2">
-                  <span className="font-semibold text-slate-700">
-                    Descrição do Produto
-                  </span>
+                  <span className="font-medium text-slate-600">Produto</span>
                   <input
                     value={descricao}
                     onChange={(e) => setDescricao(e.target.value)}
@@ -352,7 +316,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
+                  <span className="font-medium text-slate-600">
                     Transportadora
                   </span>
                   <select
@@ -375,7 +339,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">UF</span>
+                  <span className="font-medium text-slate-600">UF</span>
                   <input
                     maxLength={2}
                     value={uf}
@@ -385,7 +349,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">Cidade</span>
+                  <span className="font-medium text-slate-600">Cidade</span>
                   <input
                     value={cidade}
                     onChange={(e) => setCidade(e.target.value)}
@@ -394,9 +358,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    CD / Turno
-                  </span>
+                  <span className="font-medium text-slate-600">CD / Turno</span>
                   <div className="mt-1 flex gap-1.5">
                     <select
                       value={cd}
@@ -419,9 +381,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    Máquina (Gocase)
-                  </span>
+                  <span className="font-medium text-slate-600">Máquina</span>
                   <input
                     value={maquina}
                     placeholder="Ex: IMP-02"
@@ -431,9 +391,7 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    Lote Produto
-                  </span>
+                  <span className="font-medium text-slate-600">Lote</span>
                   <input
                     value={lote}
                     onChange={(e) => setLote(e.target.value)}
@@ -442,8 +400,8 @@ export function IngestModal({
                 </label>
 
                 <label className="block">
-                  <span className="font-semibold text-slate-700">
-                    Data Entrega (vazio se ñ entregue)
+                  <span className="font-medium text-slate-600">
+                    Data Entrega
                   </span>
                   <input
                     type="date"
@@ -454,48 +412,40 @@ export function IngestModal({
                 </label>
 
                 <div className="sm:col-span-3 flex items-center justify-between pt-2">
-                  <label className="inline-flex items-center gap-2 font-medium text-slate-700">
+                  <label className="inline-flex items-center gap-2 text-slate-600">
                     <input
                       type="checkbox"
                       checked={brinde}
                       onChange={(e) => setBrinde(e.target.checked)}
                       className="rounded border-slate-300"
                     />
-                    Pedido inclui brinde de campanha promocional
+                    Inclui brinde
                   </label>
 
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-50"
                   >
-                    {isSubmitting
-                      ? "Processando..."
-                      : "Ingerir Pedido & Calcular Score"}
+                    {isSubmitting ? "Salvando..." : "Adicionar pedido"}
                   </button>
                 </div>
               </form>
             </>
           ) : (
-            <div className="space-y-4">
-              <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 text-center transition hover:border-indigo-400 hover:bg-indigo-50/40">
-                <Upload className="h-8 w-8 text-indigo-600" />
-                <span className="mt-2 text-sm font-bold text-slate-800">
-                  Clique para selecionar um arquivo .CSV
-                </span>
-                <span className="mt-1 text-xs text-slate-500">
-                  Compatível com o formato oficial de{" "}
-                  <code>pedidos_excecao.csv</code> (ou exportações da própria plataforma)
-                </span>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={handleCsvFileChange}
-                  disabled={isSubmitting}
-                  className="hidden"
-                />
-              </label>
-            </div>
+            <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 text-center transition hover:border-slate-400">
+              <Upload className="h-7 w-7 text-slate-500" />
+              <span className="mt-2 text-xs font-bold text-slate-800">
+                Selecionar arquivo .CSV
+              </span>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleCsvFileChange}
+                disabled={isSubmitting}
+                className="hidden"
+              />
+            </label>
           )}
         </div>
       </div>

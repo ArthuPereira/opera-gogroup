@@ -2,22 +2,16 @@
 
 import React, { useMemo, useState } from "react";
 import {
-  AlertCircle,
   CheckCircle2,
   Crown,
-  Filter,
   Layers,
   ListOrdered,
   Search,
+  Sparkles,
   Truck,
   X,
 } from "lucide-react";
-import {
-  ACTION_LABELS,
-  EXCEPTION_LABELS,
-  formatBRL,
-  formatIsoDateBR,
-} from "@/lib/format";
+import { EXCEPTION_LABELS, formatBRL } from "@/lib/format";
 import {
   CarrierRoute,
   ContainmentOrder,
@@ -82,7 +76,6 @@ export function SmartQueueTab({
 }: SmartQueueTabProps) {
   const [visibleLimit, setVisibleLimit] = useState(60);
 
-  // Build selected portfolio object (works both in portfolio view and order view, and for resolved view)
   const activePortfolio = useMemo<CustomerPortfolio | null>(() => {
     if (!selectedCustomerId) {
       return filteredPortfolios[0] ?? null;
@@ -92,7 +85,6 @@ export function SmartQueueTab({
     );
     if (found) return found;
 
-    // Fallback when viewing "resolved" or single order filter
     const matchingOrders = filteredOrders.filter(
       (o) => o.customer_id === selectedCustomerId
     );
@@ -139,7 +131,7 @@ export function SmartQueueTab({
       anomalyBadges: Array.from(
         new Set(matchingOrders.flatMap((o) => o.anomalyFlags))
       ),
-      topPriorityReason: "Registro selecionado",
+      topPriorityReason: "",
     };
   }, [
     selectedCustomerId,
@@ -174,65 +166,65 @@ export function SmartQueueTab({
   const displayedOrders = filteredOrders.slice(0, visibleLimit);
 
   return (
-    <div className="space-y-4">
-      {/* Filter & Search Bar */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Search Input */}
-          <div className="relative min-w-[260px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+    <div className="space-y-3">
+      {/* Compact Toolbar */}
+      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs space-y-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Search */}
+          <div className="relative min-w-[220px] flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               value={filters.search}
               onChange={(e) =>
                 onChangeFilters({ ...filters, search: e.target.value })
               }
-              placeholder="Buscar por pedido (GB/GC), cliente (CL...), SKU, cidade, lote ou máquina..."
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:outline-none"
+              placeholder="Buscar pedido, cliente, SKU ou cidade..."
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-7 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:outline-none"
             />
             {filters.search && (
               <button
                 type="button"
                 onClick={() => onChangeFilters({ ...filters, search: "" })}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
 
-          {/* Scope Tabs */}
-          <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-0.5 text-xs">
+          {/* Scope */}
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs">
             <button
               type="button"
               onClick={() => onChangeFilters({ ...filters, scope: "top150" })}
-              className={`rounded-lg px-3 py-1.5 font-semibold transition ${
+              className={`rounded-md px-2.5 py-1 font-semibold transition ${
                 filters.scope === "top150"
-                  ? "bg-slate-900 text-white shadow-sm"
+                  ? "bg-slate-900 text-white"
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              Top 150 de Hoje
+              Prioridade (150)
             </button>
             <button
               type="button"
               onClick={() =>
                 onChangeFilters({ ...filters, scope: "all_active" })
               }
-              className={`rounded-lg px-3 py-1.5 font-semibold transition ${
+              className={`rounded-md px-2.5 py-1 font-semibold transition ${
                 filters.scope === "all_active"
-                  ? "bg-slate-900 text-white shadow-sm"
+                  ? "bg-slate-900 text-white"
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              Fila Ativa Completa
+              Todos
             </button>
             <button
               type="button"
               onClick={() => onChangeFilters({ ...filters, scope: "resolved" })}
-              className={`rounded-lg px-3 py-1.5 font-semibold transition ${
+              className={`rounded-md px-2.5 py-1 font-semibold transition ${
                 filters.scope === "resolved"
-                  ? "bg-emerald-700 text-white shadow-sm"
+                  ? "bg-emerald-700 text-white"
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
@@ -240,52 +232,47 @@ export function SmartQueueTab({
             </button>
           </div>
 
-          {/* Toggle View Mode: Portfolio vs Individual Order */}
-          <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-0.5 text-xs">
+          {/* View Mode */}
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs">
             <button
               type="button"
               onClick={() =>
                 onChangeFilters({ ...filters, viewMode: "portfolio" })
               }
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-semibold transition ${
+              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition ${
                 filters.viewMode === "portfolio"
-                  ? "bg-white text-slate-900 shadow-sm"
+                  ? "bg-white text-slate-900 shadow-2xs"
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
               <Layers className="h-3.5 w-3.5 text-indigo-600" />
-              Por Carteira ({filteredPortfolios.length})
+              Carteiras ({filteredPortfolios.length})
             </button>
             <button
               type="button"
               onClick={() => onChangeFilters({ ...filters, viewMode: "order" })}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-semibold transition ${
+              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition ${
                 filters.viewMode === "order"
-                  ? "bg-white text-slate-900 shadow-sm"
+                  ? "bg-white text-slate-900 shadow-2xs"
                   : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              <ListOrdered className="h-3.5 w-3.5 text-slate-600" />
-              Por Pedido ({filteredOrders.length})
+              <ListOrdered className="h-3.5 w-3.5 text-slate-500" />
+              Pedidos ({filteredOrders.length})
             </button>
           </div>
         </div>
 
-        {/* Combinable Dropdowns & Quick Chips */}
-        <div className="mt-2.5 flex flex-wrap items-center gap-2 pt-2.5 border-t border-slate-100 text-xs">
-          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
-            <Filter className="h-3.5 w-3.5" />
-            Filtros:
-          </span>
-
+        {/* Filter Chips */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
           <select
             value={filters.marca}
             onChange={(e) =>
               onChangeFilters({ ...filters, marca: e.target.value })
             }
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
           >
-            <option value="all">Todas as Marcas</option>
+            <option value="all">Marca: Todas</option>
             {allBrands.map((b) => (
               <option key={b} value={b}>
                 {b}
@@ -298,9 +285,9 @@ export function SmartQueueTab({
             onChange={(e) =>
               onChangeFilters({ ...filters, tipoExcecao: e.target.value })
             }
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
           >
-            <option value="all">Todas as Exceções</option>
+            <option value="all">Exceção: Todas</option>
             {(Object.keys(EXCEPTION_LABELS) as ExceptionType[]).map((k) => (
               <option key={k} value={k}>
                 {EXCEPTION_LABELS[k]}
@@ -313,9 +300,9 @@ export function SmartQueueTab({
             onChange={(e) =>
               onChangeFilters({ ...filters, cd: e.target.value })
             }
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
           >
-            <option value="all">Todos os CDs</option>
+            <option value="all">CD: Todos</option>
             <option value="CD1">CD1</option>
             <option value="CD2">CD2</option>
           </select>
@@ -325,9 +312,9 @@ export function SmartQueueTab({
             onChange={(e) =>
               onChangeFilters({ ...filters, transportadora: e.target.value })
             }
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
           >
-            <option value="all">Todas Transportadoras</option>
+            <option value="all">Transportadora: Todas</option>
             {allCarriers.map((c) => (
               <option key={c} value={c}>
                 {c}
@@ -340,14 +327,14 @@ export function SmartQueueTab({
             onClick={() =>
               onChangeFilters({ ...filters, onlyVip: !filters.onlyVip })
             }
-            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium transition ${
+            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 font-medium transition ${
               filters.onlyVip
                 ? "border-amber-400 bg-amber-50 text-amber-900"
                 : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
             }`}
           >
             <Crown className="h-3 w-3 text-amber-500" />
-            Apenas VIP (&gt; R$ 1.500)
+            VIP
           </button>
 
           <button
@@ -358,14 +345,13 @@ export function SmartQueueTab({
                 onlyMultiOrder: !filters.onlyMultiOrder,
               })
             }
-            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium transition ${
+            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 font-medium transition ${
               filters.onlyMultiOrder
                 ? "border-indigo-400 bg-indigo-50 text-indigo-900"
                 : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
             }`}
           >
-            <Layers className="h-3 w-3 text-indigo-500" />
-            Multi-pedidos (&ge;2)
+            2+ pedidos
           </button>
 
           {hasActiveFilter && (
@@ -374,20 +360,20 @@ export function SmartQueueTab({
               onClick={resetFilters}
               className="ml-auto text-xs font-semibold text-rose-600 hover:underline"
             >
-              Limpar filtros
+              Limpar
             </button>
           )}
         </div>
       </div>
 
-      {/* Master-Detail Grid */}
+      {/* Master-Detail */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 items-start">
-        {/* Left List (5 cols) */}
-        <div className="lg:col-span-5 space-y-2 max-h-[calc(100vh-260px)] overflow-y-auto pr-1">
+        {/* Left Compact List (5 cols) */}
+        <div className="lg:col-span-5 space-y-1.5 max-h-[calc(100vh-205px)] overflow-y-auto pr-1">
           {filters.viewMode === "portfolio" ? (
             displayedPortfolios.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
-                Nenhuma carteira encontrada para os filtros selecionados.
+              <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
+                Nenhum resultado encontrado.
               </div>
             ) : (
               <>
@@ -403,19 +389,17 @@ export function SmartQueueTab({
                       key={portfolio.customer_id}
                       type="button"
                       onClick={() => onSelectCustomerId(portfolio.customer_id)}
-                      className={`w-full rounded-xl border p-3 text-left transition ${
+                      className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
                         isSelected
-                          ? "border-slate-900 bg-slate-900 text-white shadow-md"
+                          ? "border-slate-900 bg-slate-900 text-white shadow-sm"
                           : "border-slate-200 bg-white hover:border-slate-300"
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
                           <span
-                            className={`inline-flex h-5 min-w-[24px] items-center justify-center rounded px-1 font-mono text-[11px] font-bold ${
-                              isSelected
-                                ? "bg-emerald-500 text-slate-950"
-                                : "bg-slate-100 text-slate-700"
+                            className={`font-mono text-[11px] font-bold ${
+                              isSelected ? "text-emerald-400" : "text-slate-400"
                             }`}
                           >
                             #{index + 1}
@@ -423,73 +407,58 @@ export function SmartQueueTab({
                           <span className="font-mono text-xs font-bold">
                             {portfolio.customer_id}
                           </span>
+                          {portfolio.isVip && (
+                            <Crown className="h-3.5 w-3.5 text-amber-400" />
+                          )}
                           {portfolio.orderCount > 1 && (
                             <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
                                 isSelected
-                                  ? "bg-indigo-500/30 text-indigo-200 border border-indigo-400/40"
-                                  : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                  ? "bg-slate-800 text-indigo-300"
+                                  : "bg-indigo-50 text-indigo-700"
                               }`}
                             >
-                              {portfolio.orderCount} pedidos
-                            </span>
-                          )}
-                          {portfolio.isVip && (
-                            <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-600 border border-amber-400/40">
-                              <Crown className="h-2.5 w-2.5" />
-                              VIP
+                              {portfolio.orderCount} ped.
                             </span>
                           )}
                           {portfolio.canConsolidatePhysicalBox && (
-                            <span className="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600">
-                              <Truck className="h-2.5 w-2.5" />
-                              1 Caixa
-                            </span>
+                            <Truck
+                              className={`h-3.5 w-3.5 ${
+                                isSelected
+                                  ? "text-emerald-400"
+                                  : "text-emerald-600"
+                              }`}
+                            />
+                          )}
+                          {hasAgentPlan && (
+                            <Sparkles className="h-3 w-3 text-indigo-400" />
                           )}
                         </div>
 
-                        <div className="text-right shrink-0">
-                          <div
-                            className={`text-sm font-extrabold ${
-                              isSelected ? "text-emerald-400" : "text-rose-600"
-                            }`}
-                          >
-                            {formatBRL(portfolio.riskTotalBRL)}
-                          </div>
-                          <div
-                            className={`text-[10px] ${
-                              isSelected ? "text-slate-300" : "text-slate-500"
-                            }`}
-                          >
-                            GMV {formatBRL(portfolio.totalOrderValueBRL)}
-                          </div>
-                        </div>
+                        <span
+                          className={`font-mono text-xs font-bold ${
+                            isSelected ? "text-emerald-400" : "text-rose-600"
+                          }`}
+                        >
+                          {formatBRL(portfolio.riskTotalBRL)}
+                        </span>
                       </div>
 
                       <div
-                        className={`mt-1.5 text-[11px] line-clamp-1 ${
-                          isSelected ? "text-slate-200" : "text-slate-600"
+                        className={`mt-1 flex items-center justify-between text-[11px] ${
+                          isSelected ? "text-slate-300" : "text-slate-500"
                         }`}
                       >
-                        {portfolio.brands.join(", ")} •{" "}
-                        {portfolio.exceptionTypes
-                          .map((t) => EXCEPTION_LABELS[t])
-                          .join(" + ")}
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px]">
-                        <span
-                          className={
-                            isSelected ? "text-slate-300" : "text-slate-500"
-                          }
-                        >
-                          {portfolio.topPriorityReason}
+                        <span className="truncate pr-2">
+                          {portfolio.brands.slice(0, 2).join(", ")} •{" "}
+                          {portfolio.exceptionTypes
+                            .slice(0, 2)
+                            .map((t) => EXCEPTION_LABELS[t])
+                            .join(" + ")}
                         </span>
-                        {hasAgentPlan && (
-                          <span className="inline-flex items-center gap-1 rounded bg-indigo-500/20 px-1.5 py-0.5 font-semibold text-indigo-400">
-                            Plano IA pronto
-                          </span>
-                        )}
+                        <span className="shrink-0 text-[10px]">
+                          {formatBRL(portfolio.totalOrderValueBRL, true)}
+                        </span>
                       </div>
                     </button>
                   );
@@ -501,15 +470,14 @@ export function SmartQueueTab({
                     onClick={() => setVisibleLimit((prev) => prev + 80)}
                     className="w-full rounded-xl border border-slate-200 bg-white py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   >
-                    Carregar mais ({filteredPortfolios.length - visibleLimit}{" "}
-                    carteiras restantes)
+                    Carregar mais ({filteredPortfolios.length - visibleLimit})
                   </button>
                 )}
               </>
             )
           ) : displayedOrders.length === 0 ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
-              Nenhum pedido encontrado para os filtros atuais.
+            <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
+              Nenhum pedido encontrado.
             </div>
           ) : (
             <>
@@ -521,75 +489,52 @@ export function SmartQueueTab({
                     key={order.order_id}
                     type="button"
                     onClick={() => onSelectCustomerId(order.customer_id)}
-                    className={`w-full rounded-xl border p-3 text-left transition ${
+                    className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
                       isSelected
-                        ? "border-slate-900 bg-slate-900 text-white shadow-md"
+                        ? "border-slate-900 bg-slate-900 text-white shadow-sm"
                         : "border-slate-200 bg-white hover:border-slate-300"
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-xs font-bold">
-                            {order.order_id}
-                          </span>
-                          <span
-                            className={`font-mono text-[11px] ${
-                              isSelected ? "text-slate-300" : "text-slate-500"
-                            }`}
-                          >
-                            ({order.customer_id})
-                          </span>
-                          {order.workflowStatus === "resolved" ? (
-                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                          ) : (
-                            <AlertCircle className="h-3.5 w-3.5 text-rose-500" />
-                          )}
-                        </div>
-                        <div
-                          className={`mt-1 text-xs font-medium ${
-                            isSelected ? "text-slate-100" : "text-slate-800"
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs font-bold">
+                          {order.order_id}
+                        </span>
+                        <span
+                          className={`font-mono text-[11px] ${
+                            isSelected ? "text-slate-400" : "text-slate-500"
                           }`}
                         >
-                          {order.marca} • {EXCEPTION_LABELS[order.tipo_excecao]}
-                        </div>
+                          {order.customer_id}
+                        </span>
+                        {order.workflowStatus === "resolved" && (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                        )}
                       </div>
 
-                      <div className="text-right">
-                        <div
-                          className={`text-sm font-bold ${
-                            isSelected ? "text-emerald-400" : "text-rose-600"
-                          }`}
-                        >
-                          {order.workflowStatus === "resolved"
-                            ? `+${formatBRL(order.resolvedSavingsBRL ?? 0)}`
-                            : formatBRL(
-                                order.directOrderRiskBRL +
-                                  order.marginalCliffBRL
-                              )}
-                        </div>
-                        <div
-                          className={`text-[10px] ${
-                            isSelected ? "text-slate-300" : "text-slate-500"
-                          }`}
-                        >
-                          Pedido {formatBRL(order.valor)}
-                        </div>
-                      </div>
+                      <span
+                        className={`font-mono text-xs font-bold ${
+                          isSelected ? "text-emerald-400" : "text-rose-600"
+                        }`}
+                      >
+                        {order.workflowStatus === "resolved"
+                          ? `+${formatBRL(order.resolvedSavingsBRL ?? 0)}`
+                          : formatBRL(
+                              order.directOrderRiskBRL + order.marginalCliffBRL
+                            )}
+                      </span>
                     </div>
 
                     <div
-                      className={`mt-1.5 flex items-center justify-between text-[10px] ${
+                      className={`mt-1 flex items-center justify-between text-[11px] ${
                         isSelected ? "text-slate-300" : "text-slate-500"
                       }`}
                     >
-                      <span>
-                        {order.cd} • {order.cidade}/{order.uf} ({order.transportadora})
+                      <span className="truncate">
+                        {order.marca} • {EXCEPTION_LABELS[order.tipo_excecao]}
                       </span>
-                      <span>
-                        {order.resolvedAction
-                          ? `Executado: ${ACTION_LABELS[order.resolvedAction]}`
-                          : `Aberto em ${formatIsoDateBR(order.data_abertura_excecao)}`}
+                      <span className="shrink-0">
+                        {order.cidade}/{order.uf}
                       </span>
                     </div>
                   </button>
@@ -602,15 +547,14 @@ export function SmartQueueTab({
                   onClick={() => setVisibleLimit((prev) => prev + 80)}
                   className="w-full rounded-xl border border-slate-200 bg-white py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
-                  Carregar mais ({filteredOrders.length - visibleLimit} pedidos
-                  restantes)
+                  Carregar mais ({filteredOrders.length - visibleLimit})
                 </button>
               )}
             </>
           )}
         </div>
 
-        {/* Right Detail: Agent Action Panel (7 cols) */}
+        {/* Right Detail Panel (7 cols) */}
         <div className="lg:col-span-7">
           <AgentActionPanel
             portfolio={activePortfolio}
