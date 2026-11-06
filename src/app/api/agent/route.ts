@@ -4,6 +4,7 @@ import { createGroq } from "@ai-sdk/groq";
 import { z } from "zod";
 import {
   buildOrderRecordFromRaw,
+  calculateFreightConsolidationSavings,
   checkTripleFreightLock,
   enrichOrderRecord,
   round2,
@@ -494,17 +495,8 @@ Regras:
     };
   });
 
-  const freightConsolidationDiscount = canConsolidateBox
-    ? round2(
-        enrichedOrders
-          .filter((o) => o.requiresPhysicalReship)
-          .slice(1)
-          .reduce(
-            (acc, o) => acc + o.economics.recommendedOption.carrierFreightBRL,
-            0
-          )
-      )
-    : 0;
+  const freightConsolidationDiscount =
+    calculateFreightConsolidationSavings(enrichedOrders);
 
   const totalNetExecutionCostBRL = round2(
     Math.max(

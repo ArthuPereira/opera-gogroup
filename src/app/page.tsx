@@ -350,28 +350,44 @@ export default function OperaDashboardPage() {
 
   async function handleExecutePortfolioResolution(params: {
     portfolio: CustomerPortfolio;
+    selectedOrders: CustomerPortfolio["orders"];
     plan: PortfolioResolutionPlan | null;
     actionOverrides: Record<string, RecommendedActionType>;
     customMessage: string;
   }) {
     const res = await executePortfolioResolution({
       customerId: params.portfolio.customer_id,
-      enrichedOrders: params.portfolio.orders,
+      enrichedOrders: params.selectedOrders,
       plan: params.plan,
       actionOverrides: params.actionOverrides,
       customMessage: params.customMessage,
     });
 
-    setToast(
-      `Carteira ${params.portfolio.customer_id} concluída (+${formatBRL(res.totalSavingsBRL)})${
-        res.claimsOpened > 0 ? ` • ${res.claimsOpened} sinistro(s)` : ""
-      }`
+    const isPartial =
+      params.selectedOrders.length < params.portfolio.orders.length;
+    const remainingOrders = params.portfolio.orders.filter(
+      (o) => !params.selectedOrders.some((s) => s.order_id === o.order_id)
     );
 
-    const nextPortfolio = filteredData.portfolios.find(
-      (p) => p.customer_id !== params.portfolio.customer_id
+    setToast(
+      isPartial
+        ? `${res.resolvedCount} de ${params.portfolio.orders.length} pedido(s) de ${params.portfolio.customer_id} concluído(s) (+${formatBRL(res.totalSavingsBRL)}) • ${remainingOrders.length} segue(m) na fila`
+        : `Carteira ${params.portfolio.customer_id} concluída (+${formatBRL(res.totalSavingsBRL)})${
+            res.claimsOpened > 0 ? ` • ${res.claimsOpened} sinistro(s)` : ""
+          }`
     );
-    setSelectedCustomerId(nextPortfolio?.customer_id ?? null);
+
+    const remainingMatchingCurrentCd =
+      filters.cd === "all"
+        ? remainingOrders
+        : remainingOrders.filter((o) => o.cd === filters.cd);
+
+    if (!isPartial || remainingMatchingCurrentCd.length === 0) {
+      const nextPortfolio = filteredData.portfolios.find(
+        (p) => p.customer_id !== params.portfolio.customer_id
+      );
+      setSelectedCustomerId(nextPortfolio?.customer_id ?? null);
+    }
   }
 
   if (isBootstrapping || !computed) {

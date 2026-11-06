@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   addBusinessDays,
   buildOrderRecordFromRaw,
+  calculateFreightConsolidationSavings,
   checkTripleFreightLock,
   countBusinessDaysBetween,
   enrichOrderRecord,
@@ -89,6 +90,9 @@ describe("Motor Determinístico Opera Gogroup", () => {
 
     expect(checkTripleFreightLock([o1, o2Same])).toBe(true);
     expect(checkTripleFreightLock([o1, o3DiffCd])).toBe(false);
+    // Com 2 pedidos no CD1 + 1 no CD2, consolida os 2 do CD1 (economiza R$ 23,00) e mantém CD2 separado
+    expect(calculateFreightConsolidationSavings([o1, o3DiffCd])).toBe(0);
+    expect(calculateFreightConsolidationSavings([o1, o2Same, o3DiffCd])).toBe(23);
   });
 
   it.skipIf(!hasLocalSeed)(

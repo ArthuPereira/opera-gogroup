@@ -1,4 +1,5 @@
 import {
+  calculateFreightConsolidationSavings,
   checkTripleFreightLock,
   round2,
   SAC_CONTACT_COST_BRL,
@@ -69,14 +70,8 @@ export function buildCustomerPortfolios(
     );
 
     const canConsolidatePhysicalBox = checkTripleFreightLock(sortedOrders);
-    const physicalReships = sortedOrders.filter((o) => o.requiresPhysicalReship);
-    const freightConsolidationSavingsBRL = canConsolidatePhysicalBox
-      ? round2(
-          physicalReships
-            .slice(1)
-            .reduce((acc, o) => acc + o.economics.recommendedOption.carrierFreightBRL, 0)
-        )
-      : 0;
+    const freightConsolidationSavingsBRL =
+      calculateFreightConsolidationSavings(sortedOrders);
 
     const riskTotalBRL = round2(
       directOrderRiskBRL +

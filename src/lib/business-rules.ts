@@ -565,6 +565,35 @@ export function checkTripleFreightLock(orders: EnrichedOrder[]): boolean {
   );
 }
 
+/**
+ * Calcula a economia de frete por consolidação física agrupando por CD + UF + Cidade.
+ * Pedidos em CDs distintos nunca dividem a mesma caixa, mas 2+ pedidos no mesmo CD/destino consolidam entre si.
+ */
+export function calculateFreightConsolidationSavings(
+  orders: EnrichedOrder[]
+): number {
+  const groups = new Map<string, EnrichedOrder[]>();
+  for (const o of orders) {
+    if (!o.requiresPhysicalReship) continue;
+    const key = `${o.cd}|${o.uf}|${o.cidade}`;
+    const list = groups.get(key) ?? [];
+    list.push(o);
+    groups.set(key, list);
+  }
+  let savings = 0;
+  for (const list of groups.values()) {
+    if (list.length >= 2) {
+      savings += list
+        .slice(1)
+        .reduce(
+          (acc, o) => acc + o.economics.recommendedOption.carrierFreightBRL,
+          0
+        );
+    }
+  }
+  return round2(savings);
+}
+
 export function buildOrderRecordFromRaw(
   raw: RawOrder,
   carriersByUfAndName: Map<string, CarrierRoute>,

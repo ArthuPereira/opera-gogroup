@@ -49,9 +49,10 @@ interface SmartQueueTabProps {
   selectedCustomerId: string | null;
   onSelectCustomerId: (customerId: string) => void;
   cachedPlans: Record<string, PortfolioResolutionPlan>;
-  onPlanGenerated: (customerId: string, plan: PortfolioResolutionPlan) => void;
+  onPlanGenerated: (planKey: string, plan: PortfolioResolutionPlan) => void;
   onExecuteResolution: (params: {
     portfolio: CustomerPortfolio;
+    selectedOrders: EnrichedOrder[];
     plan: PortfolioResolutionPlan | null;
     actionOverrides: Record<string, RecommendedActionType>;
     customMessage: string;
@@ -75,6 +76,7 @@ export function SmartQueueTab({
   onExecuteResolution,
 }: SmartQueueTabProps) {
   const [visibleLimit, setVisibleLimit] = useState(60);
+  const [focusedOrderId, setFocusedOrderId] = useState<string | null>(null);
 
   const activePortfolio = useMemo<CustomerPortfolio | null>(() => {
     if (!selectedCustomerId) {
@@ -236,9 +238,10 @@ export function SmartQueueTab({
           <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs">
             <button
               type="button"
-              onClick={() =>
-                onChangeFilters({ ...filters, viewMode: "portfolio" })
-              }
+              onClick={() => {
+                setFocusedOrderId(null);
+                onChangeFilters({ ...filters, viewMode: "portfolio" });
+              }}
               className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition ${
                 filters.viewMode === "portfolio"
                   ? "bg-white text-slate-900 shadow-2xs"
@@ -383,12 +386,18 @@ export function SmartQueueTab({
                   const hasAgentPlan = Boolean(
                     cachedPlans[portfolio.customer_id]
                   );
+                  const portfolioCds = Array.from(
+                    new Set(portfolio.orders.map((o) => o.cd))
+                  ).sort();
 
                   return (
                     <button
                       key={portfolio.customer_id}
                       type="button"
-                      onClick={() => onSelectCustomerId(portfolio.customer_id)}
+                      onClick={() => {
+                        setFocusedOrderId(null);
+                        onSelectCustomerId(portfolio.customer_id);
+                      }}
                       className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
                         isSelected
                           ? "border-slate-900 bg-slate-900 text-white shadow-sm"
@@ -421,7 +430,18 @@ export function SmartQueueTab({
                               {portfolio.orderCount} ped.
                             </span>
                           )}
-                          {portfolio.canConsolidatePhysicalBox && (
+                          {portfolioCds.length > 1 && (
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                isSelected
+                                  ? "bg-amber-500/20 text-amber-300"
+                                  : "bg-amber-50 text-amber-800"
+                              }`}
+                            >
+                              {portfolioCds.join("+")}
+                            </span>
+                          )}
+                          {portfolio.freightConsolidationSavingsBRL > 0 && (
                             <Truck
                               className={`h-3.5 w-3.5 ${
                                 isSelected
@@ -483,12 +503,17 @@ export function SmartQueueTab({
             <>
               {displayedOrders.map((order) => {
                 const isSelected =
-                  activePortfolio?.customer_id === order.customer_id;
+                  focusedOrderId === order.order_id ||
+                  (!focusedOrderId &&
+                    activePortfolio?.customer_id === order.customer_id);
                 return (
                   <button
                     key={order.order_id}
                     type="button"
-                    onClick={() => onSelectCustomerId(order.customer_id)}
+                    onClick={() => {
+                      setFocusedOrderId(order.order_id);
+                      onSelectCustomerId(order.customer_id);
+                    }}
                     className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
                       isSelected
                         ? "border-slate-900 bg-slate-900 text-white shadow-sm"
@@ -499,6 +524,15 @@ export function SmartQueueTab({
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono text-xs font-bold">
                           {order.order_id}
+                        </span>
+                        <span
+                          className={`rounded px-1 py-0.5 text-[10px] font-semibold ${
+                            isSelected
+                              ? "bg-slate-800 text-slate-300"
+                              : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {order.cd}
                         </span>
                         <span
                           className={`font-mono text-[11px] ${
@@ -560,11 +594,9 @@ export function SmartQueueTab({
             portfolio={activePortfolio}
             carriersByUf={carriersByUf}
             activeContainments={activeContainments}
-            cachedPlan={
-              activePortfolio
-                ? cachedPlans[activePortfolio.customer_id] ?? null
-                : null
-            }
+            cachedPlans={cachedPlans}
+            activeCdFilter={filters.cd}
+            focusedOrderId={focusedOrderId}
             onPlanGenerated={onPlanGenerated}
             onExecuteResolution={onExecuteResolution}
           />
