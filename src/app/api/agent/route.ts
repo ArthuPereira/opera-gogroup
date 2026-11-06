@@ -9,6 +9,7 @@ import {
   round2,
   SAC_CONTACT_COST_BRL,
 } from "@/lib/business-rules";
+import { ACTION_LABELS } from "@/lib/format";
 import {
   AgentOrderDecision,
   AgentToolTrace,
@@ -31,27 +32,86 @@ const ACTION_ENUM = z.enum([
   "reembolso_direto",
 ]);
 
-const CANDIDATE_MODELS = [
-  process.env.GROQ_MODEL,
-  "openai/gpt-oss-120b",
-  "openai/gpt-oss-20b",
-  "qwen/qwen3.8-27b",
-].filter((m): m is string => Boolean(m && m.trim()));
+/**
+ * Modelos priorizados com buckets independentes de 8.000 TPM na Groq.
+ * qwen/qwen3.8-27b foi removido da cadeia por instabilidade (503/429) e alto gasto de tokens de raciocínio.
+ */
+const CANDIDATE_MODELS = Array.from(
+  new Set(
+    [
+      process.env.GROQ_MODEL,
+      "openai/gpt-oss-20b",
+      "openai/gpt-oss-120b",
+    ].filter((m): m is string => Boolean(m && m.trim()))
+  )
+);
+
+const CACHE_TTL_MS = 90_000;
+const responseCache = new Map<string, { expiresAt: number; payload: unknown }>();
+
+function getCachedResponse<T>(key: string): T | null {
+  const entry = responseCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    responseCache.delete(key);
+    return null;
+  }
+  return entry.payload as T;
+}
+
+function setCachedResponse(key: string, payload: unknown) {
+  if (responseCache.size > 200) {
+    const oldestKey = responseCache.keys().next().value;
+    if (oldestKey) responseCache.delete(oldestKey);
+  }
+  responseCache.set(key, {
+    expiresAt: Date.now() + CACHE_TTL_MS,
+    payload,
+  });
+}
 
 function getGroqProvider() {
   const apiKey = process.env.GROQ_KEY_API || process.env.GROQ_API_KEY;
   if (!apiKey) {
-    throw new Error(
-      "Chave da API Groq não encontrada. Configure GROQ_KEY_API no .env ou nas variáveis da Vercel."
-    );
+    return null;
   }
-  return createGroq({ apiKey });
+  return createGroq({
+    apiKey,
+    fetch: async (url, init) => {
+      if (init?.body && typeof init.body === "string") {
+        try {
+          const parsed = JSON.parse(init.body) as Record<string, unknown>;
+          const modelId = String(parsed.model || "");
+          if (modelId.includes("gpt-oss") && !parsed.reasoning_effort) {
+            parsed.reasoning_effort = "low";
+          }
+          init = { ...init, body: JSON.stringify(parsed) };
+        } catch {
+          // Mantém body original caso não seja JSON
+        }
+      }
+      const res = await fetch(url, init);
+      if (res.status === 429) {
+        const cloneText = await res.clone().text().catch(() => "");
+        const msMatch = cloneText.match(/try again in ([0-9.]+)(ms|s)/i);
+        if (msMatch) {
+          const rawVal = parseFloat(msMatch[1]);
+          const waitMs =
+            msMatch[2].toLowerCase() === "s" ? rawVal * 1000 : rawVal;
+          if (waitMs > 0 && waitMs <= 2500) {
+            await new Promise((r) => setTimeout(r, Math.ceil(waitMs) + 80));
+            return fetch(url, init);
+          }
+        }
+      }
+      return res;
+    },
+  });
 }
 
 async function runWithModelFallback<T>(
   runner: (modelName: string) => Promise<T>
-): Promise<{ output: T; modelUsed: string }> {
-  let lastError: unknown = null;
+): Promise<{ output: T; modelUsed: string } | null> {
   for (let i = 0; i < CANDIDATE_MODELS.length; i++) {
     const modelName = CANDIDATE_MODELS[i];
     try {
@@ -61,12 +121,13 @@ async function runWithModelFallback<T>(
         modelUsed: i === 0 ? modelName : `${modelName} (fallback)`,
       };
     } catch (err) {
-      lastError = err;
+      console.warn(
+        `[agent] Falha no modelo ${modelName}:`,
+        err instanceof Error ? err.message : err
+      );
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Nenhum modelo Groq disponível respondeu com sucesso.");
+  return null;
 }
 
 export async function POST(req: Request) {
@@ -89,7 +150,7 @@ export async function POST(req: Request) {
     const message =
       error instanceof Error
         ? error.message
-        : "Falha inesperada na execução do Agente Groq.";
+        : "Falha inesperada ao processar análise.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
@@ -100,13 +161,27 @@ async function handlePortfolioResolution(body: {
   carriersByUf: Record<string, CarrierRoute[]>;
   activeContainments?: ContainmentOrder[];
 }) {
-  const groq = getGroqProvider();
   const {
     customer,
     orders: rawOrders,
     carriersByUf: carriersRecord,
     activeContainments = [],
   } = body;
+
+  const activeContainmentKey = activeContainments
+    .filter((c) => c.active)
+    .map((c) => c.id)
+    .sort()
+    .join(",");
+  const cacheKey = `portfolio:${customer.customer_id}:${rawOrders
+    .map((o) => o.order_id)
+    .sort()
+    .join(",")}:${activeContainmentKey}`;
+
+  const cached = getCachedResponse<PortfolioResolutionPlan>(cacheKey);
+  if (cached) {
+    return NextResponse.json(cached);
+  }
 
   const carriersByUf = new Map<string, CarrierRoute[]>(
     Object.entries(carriersRecord || {})
@@ -138,270 +213,234 @@ async function handlePortfolioResolution(body: {
   );
   const totalProtectedRiskBRL = round2(directRisk + ltvRisk + sacAvoided);
 
-  interface SubmittedPlanShape {
-    executiveSummary: string;
-    consolidatePhysicalShipment: boolean;
-    consolidationExplanation: string;
-    decisions: Array<{
-      order_id: string;
-      recommendedAction: RecommendedActionType;
-      alternativeAction: RecommendedActionType;
-      targetCarrier: string;
-      productionDirective: string;
-      antiRecurrenceGuards: string[];
-      openCarrierClaim: boolean;
-    }>;
-    customerMessage: string;
+  const SubmitPlanSchema = z.object({
+    executiveSummary: z.string(),
+    consolidatePhysicalShipment: z.boolean().default(false),
+    consolidationExplanation: z.string().default(""),
+    decisions: z.array(
+      z.object({
+        order_id: z.string(),
+        recommendedAction: ACTION_ENUM,
+        alternativeAction: ACTION_ENUM.default("voucher_credito"),
+        targetCarrier: z.string().default("Veloz Log"),
+        productionDirective: z.string().default(""),
+        antiRecurrenceGuards: z.array(z.string()).default([]),
+        openCarrierClaim: z.boolean().default(false),
+      })
+    ),
+    customerMessage: z.string(),
+  });
+
+  type SubmittedPlanShape = z.infer<typeof SubmitPlanSchema>;
+
+  const activeRules = activeContainments
+    .filter((c) => c.active)
+    .map((c) => `${c.blockedTarget}->${c.redirectTarget}`);
+
+  const buildInspectTrace = (step: number): AgentToolTrace => ({
+    step,
+    toolName: "inspectPortfolioContext",
+    summary: `Carteira ${customer.customer_id} (${
+      firstOrder?.isVipCustomer ? "VIP" : "Regular"
+    }, R$ ${customer.receita_acumulada.toFixed(2)} acum.) com ${
+      enrichedOrders.length
+    } pedido(s) • Risco R$ ${totalProtectedRiskBRL.toFixed(
+      2
+    )} • Caixa única: ${canConsolidateBox ? "SIM" : "NÃO"}`,
+    inputPreview: `customer_id=${customer.customer_id}`,
+    outputPreview: `LTV R$ ${ltvRisk.toFixed(2)} | Direto+SLA R$ ${directRisk.toFixed(2)}`,
+  });
+
+  const buildAnomalyTrace = (step: number): AgentToolTrace => {
+    const flags = enrichedOrders.flatMap((o) => o.anomalyFlags);
+    const guardsCount = enrichedOrders.reduce(
+      (acc, o) =>
+        acc +
+        o.anomalyFlags.length +
+        o.economics.recommendedOption.antiRecurrenceGuards.length,
+      0
+    );
+    return {
+      step,
+      toolName: "checkRecurrenceAnomalies",
+      summary:
+        guardsCount > 0
+          ? `${guardsCount} trava(s) anti-reincidência aplicadas (${
+              Array.from(new Set(flags)).join(", ") || "proteção de rota"
+            })`
+          : "Sem anomalia crônica; mantido padrão seguro de expedição.",
+      inputPreview: `${enrichedOrders.length} pedido(s) verificados`,
+      outputPreview:
+        activeRules.length > 0
+          ? `Contenções ativas: ${activeRules.join(" | ")}`
+          : enrichedOrders
+              .map((o) => `${o.order_id}: ${o.anomalyFlags.join(",") || "OK"}`)
+              .join(" • "),
+    };
+  };
+
+  const buildEconomicsTrace = (step: number): AgentToolTrace => {
+    const totalNetCost = round2(
+      enrichedOrders.reduce(
+        (acc, o) => acc + o.economics.recommendedOption.directCostBRL,
+        0
+      )
+    );
+    const totalClaims = round2(
+      enrichedOrders.reduce(
+        (acc, o) => acc + o.economics.eligibleCarrierClaimBRL,
+        0
+      )
+    );
+    const refundLoss = round2(
+      enrichedOrders.reduce((acc, o) => acc + o.valor, 0) + ltvRisk
+    );
+    return {
+      step,
+      toolName: "simulateOptimalEconomics",
+      summary: `Custo ótimo R$ ${totalNetCost.toFixed(
+        2
+      )} vs Cancelamento+LTV R$ ${refundLoss.toFixed(2)}${
+        totalClaims > 0 ? ` • Sinistro R$ ${totalClaims.toFixed(2)}` : ""
+      }`,
+      inputPreview: "CMV 24% + Frete UF + LTV + Sinistro",
+      outputPreview: enrichedOrders
+        .map(
+          (o) =>
+            `${o.order_id}: ${o.economics.recommendedOption.action} (R$ ${o.economics.recommendedOption.directCostBRL.toFixed(
+              2
+            )})`
+        )
+        .join(" • "),
+    };
+  };
+
+  let toolTraces: AgentToolTrace[] = [];
+  let submittedPlanArgs: SubmittedPlanShape | null = null;
+  let fallbackText = "";
+  let modelUsed = "contingencia-operacional";
+
+  const groq = getGroqProvider();
+
+  if (groq) {
+    const llmResult = await runWithModelFallback(async (modelName) => {
+      const attemptTraces: AgentToolTrace[] = [];
+      let stepCounter = 0;
+
+      const gen = await generateText({
+        model: groq(modelName),
+        temperature: 0.1,
+        maxRetries: 0,
+        maxSteps: 3,
+        system: `Analista sênior de operações Gogroup (Gocase e GoBeauté).
+Passo 1: chame auditPortfolio.
+Passo 2: chame submitResolutionPlan com os valores exatos em R$ retornados.
+Regras:
+- Nunca invente valores nem use jargões internos de sistema.
+- Respeite travas de lote (bloquear L2607-B -> L2608-A/C), máquina (bloquear IMP-02 -> IMP-01/03), rota NE (migrar Rota Express -> Veloz Log), Carga Norte vidro (colmeia dupla + sinistro), devolvido Gocase personalizado (reexpedicao_sem_cmv) e ruptura KSH-1009..1011/brinde (voucher_credito).
+- consolidatePhysicalShipment=true somente se boxConsolidation=true.
+- Português do Brasil objetivo no resumo e empático na mensagem ao cliente.`,
+        prompt: `Analise o cliente ${customer.customer_id} (${enrichedOrders
+          .map((o) => `${o.order_id}:${o.tipo_excecao}`)
+          .join(", ")}) e registre submitResolutionPlan.`,
+        tools: {
+          auditPortfolio: tool({
+            description:
+              "Audita contexto da carteira, anomalias de reincidência e simulação econômica ótima por pedido.",
+            parameters: z.object({}),
+            execute: async () => {
+              attemptTraces.push(
+                buildInspectTrace(++stepCounter),
+                buildAnomalyTrace(++stepCounter),
+                buildEconomicsTrace(++stepCounter)
+              );
+              return {
+                vip: firstOrder?.isVipCustomer ?? false,
+                ltvRisk,
+                totalProtectedRiskBRL,
+                boxConsolidation: canConsolidateBox,
+                activeRules,
+                orders: enrichedOrders.map((o) => ({
+                  id: o.order_id,
+                  marca: o.marca,
+                  sku: o.sku,
+                  val: o.valor,
+                  exc: o.tipo_excecao,
+                  dest: `${o.cidade}/${o.uf}`,
+                  cd: o.cd,
+                  atrasoUteis: o.businessDaysLate,
+                  flags: o.anomalyFlags,
+                  guards: o.economics.recommendedOption.antiRecurrenceGuards.map(
+                    (g) => g.slice(0, 85)
+                  ),
+                  rec: o.economics.recommendedOption.action,
+                  costBRL: o.economics.recommendedOption.directCostBRL,
+                  carrier: o.economics.recommendedOption.recommendedCarrier,
+                  alt:
+                    o.economics.alternativeOptions[0]?.action ??
+                    "reembolso_direto",
+                  claimBRL: o.economics.eligibleCarrierClaimBRL,
+                })),
+              };
+            },
+          }),
+
+          // Sem execute: encerra o loop imediatamente ao submeter o plano, economizando 1 round-trip inteiro de tokens
+          submitResolutionPlan: tool({
+            description: "Entrega o plano final consolidado para a carteira.",
+            parameters: SubmitPlanSchema,
+          }),
+        },
+      });
+
+      const allToolCalls = gen.steps.flatMap((s) => s.toolCalls);
+      const submitCall = allToolCalls.find(
+        (tc) => tc.toolName === "submitResolutionPlan"
+      );
+
+      let parsedPlan: SubmittedPlanShape | null = null;
+      if (submitCall) {
+        const parsed = SubmitPlanSchema.safeParse(submitCall.args);
+        if (parsed.success) {
+          parsedPlan = parsed.data;
+          stepCounter++;
+          attemptTraces.push({
+            step: stepCounter,
+            toolName: "submitResolutionPlan",
+            summary: `Plano consolidado para ${parsedPlan.decisions.length} pedido(s).`,
+            inputPreview: `consolidate=${parsedPlan.consolidatePhysicalShipment}`,
+            outputPreview: parsedPlan.executiveSummary.slice(0, 140),
+          });
+        }
+      }
+
+      return { gen, attemptTraces, parsedPlan };
+    });
+
+    if (llmResult) {
+      modelUsed = llmResult.modelUsed;
+      toolTraces = llmResult.output.attemptTraces;
+      submittedPlanArgs = llmResult.output.parsedPlan;
+      fallbackText = llmResult.output.gen.text?.trim() || "";
+    }
   }
-  const planHolder: { current: SubmittedPlanShape | null } = { current: null };
 
-  const toolTraces: AgentToolTrace[] = [];
-  let stepCounter = 0;
-
-  const { output: generation, modelUsed } = await runWithModelFallback((modelName) =>
-    generateText({
-      model: groq(modelName),
-      temperature: 0.15,
-      maxSteps: 6,
-      system: `Você é o Agente Central AI-First de Operações da Gogroup (Gocase e GoBeauté).
-Sua missão é investigar a carteira do cliente usando OBRIGATORIAMENTE as tools determinísticas na sequência lógica:
-1) inspectPortfolioContext
-2) checkRecurrenceAnomalies
-3) simulateOptimalEconomics
-4) submitResolutionPlan (OBRIGATÓRIO chamar esta tool ao final para entregar o plano executável).
-
-REGRAS INEGOCIÁVEIS DE NEGÓCIO:
-- Nunca invente valores em R$: use exatamente os números calculados pelas tools.
-- Trava Anti-Reincidência:
-  * Vazamento no lote L2607-B (APC-1067): proíba separar do L2607-B; exija lote íntegro (L2608-A/C).
-  * Falha de personalização na IMP-02: bloqueie IMP-02 e roteie reimpressão para IMP-01 ou IMP-03 (CD1).
-  * Nordeste (CE, PB, PE, BA, RN) com Rota Express: migre reenvio para Veloz Log (+R$ 3,22, mesmo SLA de 6d úteis).
-  * Avaria na Carga Norte (especialmente vidro Lescent): migre transportadora + embalagem colmeia dupla + abra protocolo de ressarcimento.
-  * Devolvido transportadora (especialmente personalizados Gocase sem valor de revenda): use reexpedicao_sem_cmv (CMV R$ 0 + frete) após confirmar endereço.
-  * Item faltante com brinde ou ruptura pós-venda (KSH-1009/1010/1011): priorize voucher_credito (Frete R$ 0).
-- Trava Tripla de Consolidação: só marque consolidatePhysicalShipment=true se inspectPortfolioContext confirmar mesmo CD + mesma UF/cidade + >=2 reenvios físicos.
-- Escreva tudo em Português do Brasil claro, executivo e empático na mensagem ao cliente.`,
-      prompt: `Investigue e monte o Plano Economicamente Ótimo para a carteira do cliente ${customer.customer_id} (${enrichedOrders.length} pedido(s): ${enrichedOrders
-        .map((o) => `${o.order_id} [${o.marca} - ${o.tipo_excecao} - R$ ${o.valor.toFixed(2)}]`)
-        .join(", ")}). Execute as 4 tools em sequência até registrar submitResolutionPlan.`,
-      tools: {
-        inspectPortfolioContext: tool({
-          description:
-            "Inspeciona os pedidos da carteira do cliente, status VIP/LTV em risco e verifica a Trava Tripla de consolidação física de frete.",
-          parameters: z.object({
-            focusNote: z
-              .string()
-              .optional()
-              .default("")
-              .describe("Foco inicial da inspeção da carteira"),
-          }),
-          execute: async (args) => {
-            const payload = {
-              customer_id: customer.customer_id,
-              isVip: firstOrder?.isVipCustomer ?? false,
-              accumulatedRevenueBRL: customer.receita_acumulada,
-              historicalOrders: customer.n_pedidos,
-              ltvAtRiskOnceBRL: ltvRisk,
-              avoidedExtraSacContactsBRL: sacAvoided,
-              tripleFreightLock: {
-                canConsolidatePhysicalBox: canConsolidateBox,
-                rule: "Mesmo CD + Mesma UF/Cidade + >=2 ações de reenvio físico",
-              },
-              orders: enrichedOrders.map((o) => ({
-                order_id: o.order_id,
-                marca: o.marca,
-                sku: o.sku,
-                descricao: o.descricao_produto,
-                valorBRL: o.valor,
-                brinde: o.brinde_no_pedido,
-                tipo_excecao: o.tipo_excecao,
-                transportadoraAtual: o.transportadora,
-                destino: `${o.cidade}/${o.uf}`,
-                cd: o.cd,
-                turno: o.turno,
-                maquina: o.maquina,
-                lote: o.lote_produto,
-                realDueDate: o.realDueDate,
-                businessDaysLate: o.businessDaysLate,
-                directRiskBRL: o.directOrderRiskBRL,
-                cliffBRL: o.marginalCliffBRL,
-              })),
-            };
-
-            stepCounter++;
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "inspectPortfolioContext",
-              summary: `Carteira ${customer.customer_id} (${
-                payload.isVip ? "VIP" : "Regular"
-              }, R$ ${customer.receita_acumulada.toFixed(2)} acum.) com ${
-                enrichedOrders.length
-              } pedido(s) • Risco Total R$ ${totalProtectedRiskBRL.toFixed(2)} • Consolidação física: ${
-                canConsolidateBox ? "APROVADA" : "NÃO APLICÁVEL"
-              }`,
-              inputPreview: args.focusNote || `customer_id=${customer.customer_id}`,
-              outputPreview: `LTV em risco: R$ ${ltvRisk.toFixed(2)} | Risco direto+cliff: R$ ${directRisk.toFixed(2)}`,
-            });
-
-            return payload;
-          },
-        }),
-
-        checkRecurrenceAnomalies: tool({
-          description:
-            "Verifica armadilhas operacionais nos pedidos (IMP-02, Lote L2607-B, Rota Express NE, Carga Norte Lescent, CD2 Noite Brinde, Ruptura Kokeshi) e contenções sistêmicas ativas.",
-          parameters: z.object({
-            includeActiveContainments: z.boolean().default(true),
-          }),
-          execute: async () => {
-            const findings = enrichedOrders.map((o) => ({
-              order_id: o.order_id,
-              anomalyFlags: o.anomalyFlags,
-              requiredGuards: o.economics.recommendedOption.antiRecurrenceGuards,
-            }));
-            const activeRules = activeContainments
-              .filter((c) => c.active)
-              .map((c) => `${c.title}: ${c.blockedTarget} -> ${c.redirectTarget}`);
-
-            const totalGuards = findings.reduce(
-              (acc, f) => acc + f.anomalyFlags.length + f.requiredGuards.length,
-              0
-            );
-
-            stepCounter++;
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "checkRecurrenceAnomalies",
-              summary:
-                totalGuards > 0
-                  ? `${totalGuards} alerta(s)/trava(s) anti-reincidência detectados (${findings
-                      .flatMap((f) => f.anomalyFlags)
-                      .join(", ") || "proteção de rota"})`
-                  : "Nenhuma anomalia crônica crítica; aplicadas boas práticas padrão de rota.",
-              inputPreview: `${enrichedOrders.length} pedido(s) cruzados contra 6 causas-raiz`,
-              outputPreview:
-                activeRules.length > 0
-                  ? `Contenções sistêmicas ativas aplicadas: ${activeRules.join(" | ")}`
-                  : findings
-                      .map((f) => `${f.order_id}: ${f.anomalyFlags.join(", ") || "OK"}`)
-                      .join(" • "),
-            });
-
-            return { findings, activeSystemicContainments: activeRules };
-          },
-        }),
-
-        simulateOptimalEconomics: tool({
-          description:
-            "Compara matematicamente os custos líquidos em R$ de Reenvio, Reexpedição (0% CMV), Voucher (Frete R$ 0) e Reembolso + ressarcimento de transportadora.",
-          parameters: z.object({
-            evaluateCarrierClaims: z.boolean().default(true),
-          }),
-          execute: async () => {
-            const simulations = enrichedOrders.map((o) => ({
-              order_id: o.order_id,
-              valorPagoBRL: o.valor,
-              cmv24PctBRL: o.economics.cmvBRL,
-              reshipExceedsOrderValue: o.economics.reshipExceedsOrderValue,
-              vipProtectionOverride: o.economics.vipProtectionOverride,
-              eligibleCarrierClaimBRL: o.economics.eligibleCarrierClaimBRL,
-              optimalAction: o.economics.recommendedOption,
-              alternatives: o.economics.alternativeOptions,
-            }));
-
-            const totalNetCost = round2(
-              enrichedOrders.reduce(
-                (acc, o) => acc + o.economics.recommendedOption.directCostBRL,
-                0
-              )
-            );
-            const totalClaims = round2(
-              enrichedOrders.reduce(
-                (acc, o) => acc + o.economics.eligibleCarrierClaimBRL,
-                0
-              )
-            );
-            const totalRefundComparison = round2(
-              enrichedOrders.reduce((acc, o) => acc + o.valor, 0) + ltvRisk
-            );
-
-            stepCounter++;
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "simulateOptimalEconomics",
-              summary: `Custo ótimo R$ ${totalNetCost.toFixed(
-                2
-              )} vs Perda de Cancelamento+LTV R$ ${totalRefundComparison.toFixed(
-                2
-              )}${
-                totalClaims > 0
-                  ? ` • Sinistro recuperável: R$ ${totalClaims.toFixed(2)}`
-                  : ""
-              }`,
-              inputPreview: "Matriz CMV (24%) + Frete UF + Proteção LTV + Sinistros",
-              outputPreview: simulations
-                .map(
-                  (s) =>
-                    `${s.order_id}: ${s.optimalAction.action} (R$ ${s.optimalAction.directCostBRL.toFixed(
-                      2
-                    )} via ${s.optimalAction.recommendedCarrier})`
-                )
-                .join(" • "),
-            });
-
-            return {
-              totalProtectedRiskBRL,
-              totalDirectExecutionCostBRL: totalNetCost,
-              totalRecoverableCarrierClaimsBRL: totalClaims,
-              simulations,
-            };
-          },
-        }),
-
-        submitResolutionPlan: tool({
-          description:
-            "Registra o plano final validado com decisões por pedido, travas anti-reincidência e mensagem consolidada para o cliente.",
-          parameters: z.object({
-            executiveSummary: z
-              .string()
-              .describe("Resumo executivo direto explicando a lógica financeira em R$ e travas aplicadas"),
-            consolidatePhysicalShipment: z.boolean().default(false),
-            consolidationExplanation: z.string().default(""),
-            decisions: z.array(
-              z.object({
-                order_id: z.string(),
-                recommendedAction: ACTION_ENUM,
-                alternativeAction: ACTION_ENUM.default("voucher_credito"),
-                targetCarrier: z.string().default("Veloz Log"),
-                productionDirective: z.string().default(""),
-                antiRecurrenceGuards: z.array(z.string()).default([]),
-                openCarrierClaim: z.boolean().default(false),
-              })
-            ),
-            customerMessage: z
-              .string()
-              .describe("Mensagem única e acolhedora pronta para envio via WhatsApp/E-mail cobrindo toda a carteira"),
-          }),
-          execute: async (args) => {
-            planHolder.current = args;
-            stepCounter++;
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "submitResolutionPlan",
-              summary: `Plano estruturado validado p/ ${args.decisions.length} pedido(s) pronto para execução em 1 clique.`,
-              inputPreview: `consolidate=${args.consolidatePhysicalShipment}`,
-              outputPreview: args.executiveSummary.slice(0, 140),
-            });
-            return { status: "plan_locked_and_validated" };
-          },
-        }),
+  // Se todos os modelos estiverem temporariamente em limite de cota (429/503) ou sem chave, garante resposta determinística completa sem erro 500
+  if (toolTraces.length === 0) {
+    toolTraces = [
+      buildInspectTrace(1),
+      buildAnomalyTrace(2),
+      buildEconomicsTrace(3),
+      {
+        step: 4,
+        toolName: "submitResolutionPlan",
+        summary: `Plano calculado pelo motor de regras para ${enrichedOrders.length} pedido(s).`,
+        inputPreview: `consolidate=${canConsolidateBox}`,
+        outputPreview: "Contingência automática aplicada sem interrupção operacional.",
       },
-    })
-  );
+    ];
+  }
 
-  const submittedPlanArgs = planHolder.current;
-
-  // Combina as decisões do Agente com a garantia matemática determinística de cada pedido
   const finalDecisions: AgentOrderDecision[] = enrichedOrders.map((o) => {
     const llmDec = submittedPlanArgs?.decisions.find(
       (d) => d.order_id === o.order_id
@@ -489,31 +528,35 @@ REGRAS INEGOCIÁVEIS DE NEGÓCIO:
   );
 
   const fallbackSummary =
-    generation.text?.trim() ||
-    `Carteira ${customer.customer_id} analisada: proteção de R$ ${totalProtectedRiskBRL.toFixed(
+    fallbackText ||
+    `Proteção de R$ ${totalProtectedRiskBRL.toFixed(
       2
-    )} em risco com custo direto otimizado de R$ ${totalNetExecutionCostBRL.toFixed(
+    )} em receita/LTV com custo direto de execução de R$ ${totalNetExecutionCostBRL.toFixed(
       2
     )}${
+      canConsolidateBox
+        ? `, caixa única (-R$ ${freightConsolidationDiscount.toFixed(2)} em frete)`
+        : ""
+    }${
       totalCarrierClaimsBRL > 0
-        ? ` e recuperação de R$ ${totalCarrierClaimsBRL.toFixed(
-            2
-          )} via sinistro de transportadora`
+        ? ` e R$ ${totalCarrierClaimsBRL.toFixed(2)} elegíveis a ressarcimento logístico`
         : ""
     }.`;
 
-  const fallbackMessage = `Olá! Aqui é da equipe de Prioridade Gogroup. Identificamos tudo sobre ${
+  const fallbackMessage = `Olá! Revisamos ${
     enrichedOrders.length > 1
       ? `os seus pedidos (${enrichedOrders.map((o) => o.order_id).join(", ")})`
       : `o seu pedido ${enrichedOrders[0].order_id}`
-  } e já aplicamos a solução imediata: ${finalDecisions
+  } e já liberamos a tratativa prioritária: ${finalDecisions
     .map(
       (d) =>
-        `${d.order_id} -> ${d.recommendedAction.replace(/_/g, " ")} (${
-          d.targetCarrier
-        })`
+        `${d.order_id}: ${ACTION_LABELS[d.recommendedAction]}${
+          d.targetCarrier && !d.targetCarrier.includes("Sem frete")
+            ? ` via ${d.targetCarrier}`
+            : ""
+        }`
     )
-    .join("; ")}. Você receberá a atualização de acompanhamento prioritário ainda hoje!`;
+    .join(" | ")}. Você receberá a atualização de acompanhamento ainda hoje.`;
 
   const responsePlan: PortfolioResolutionPlan = {
     customer_id: customer.customer_id,
@@ -521,11 +564,11 @@ REGRAS INEGOCIÁVEIS DE NEGÓCIO:
     consolidatePhysicalShipment: canConsolidateBox,
     consolidationExplanation: canConsolidateBox
       ? submittedPlanArgs?.consolidationExplanation ||
-        `Trava Tripla atendida (${firstOrder.cd} -> ${firstOrder.cidade}/${firstOrder.uf}): reenvios unificados em caixa única economizando R$ ${freightConsolidationDiscount.toFixed(2)} em frete.`
+        `Envios unificados no ${firstOrder.cd} para ${firstOrder.cidade}/${firstOrder.uf}, economizando R$ ${freightConsolidationDiscount.toFixed(2)} em frete.`
       : submittedPlanArgs?.consolidationExplanation ||
         (enrichedOrders.length === 1
-          ? "Carteira com pedido único (sem necessidade de consolidação de caixa)."
-          : "Trava Tripla bloqueou unificação física (CDs ou modalidades distintas), mas unificou o atendimento em 1 único contato."),
+          ? "Pedido único na carteira."
+          : "Atendimento unificado em contato único (envios em CDs ou modalidades distintas)."),
     totalProtectedRiskBRL,
     totalNetExecutionCostBRL,
     totalSavingsGeneratedBRL,
@@ -535,6 +578,10 @@ REGRAS INEGOCIÁVEIS DE NEGÓCIO:
     modelUsed,
     toolTraces,
   };
+
+  if (modelUsed !== "contingencia-operacional") {
+    setCachedResponse(cacheKey, responsePlan);
+  }
 
   return NextResponse.json(responsePlan);
 }
@@ -554,133 +601,148 @@ async function handleSystemicContainment(body: {
     lote_produto: string;
   }>;
 }) {
-  const groq = getGroqProvider();
   const { anomaly, sampleOrders = [] } = body;
-
-  const toolTraces: AgentToolTrace[] = [];
-  let stepCounter = 0;
-
-  interface SubmittedContainmentShape {
-    title: string;
-    executiveDiagnosis: string;
-    ruleSummary: string;
-    blockedTarget: string;
-    redirectTarget: string;
-    technicalDispatchMessage: string;
+  const cacheKey = `containment:${anomaly.id}:${anomaly.affectedOrdersCount}`;
+  const cached = getCachedResponse<SystemicContainmentPlan>(cacheKey);
+  if (cached) {
+    return NextResponse.json(cached);
   }
-  const containmentHolder: { current: SubmittedContainmentShape | null } = {
-    current: null,
-  };
 
-  const { output: generation, modelUsed } = await runWithModelFallback((modelName) =>
-    generateText({
-      model: groq(modelName),
-      temperature: 0.15,
-      maxSteps: 5,
-      system: `Você é o Engenheiro Líder de Automação de Processos AI-First da Gogroup.
-Ao investigar um alerta do Radar Sistêmico, execute em sequência:
-1) quantifyAnomalyImpact
-2) simulateContainmentRouting
-3) submitContainmentOrder (OBRIGATÓRIO para emitir a Ordem de Contenção Operacional).
+  const SubmitContainmentSchema = z.object({
+    title: z.string(),
+    executiveDiagnosis: z.string(),
+    ruleSummary: z.string(),
+    blockedTarget: z.string(),
+    redirectTarget: z.string(),
+    technicalDispatchMessage: z.string(),
+  });
 
-Use números exatos em R$, cite a concentração estatística real e redija um comunicado técnico curto e acionável para os líderes de CD / Logística / TI.`,
-      prompt: `Emita uma Ordem de Contenção Sistêmica para estancar a causa-raiz "${anomaly.title}" (${anomaly.concentrationMetric}, exposição de R$ ${anomaly.financialExposureBRL.toFixed(2)}).`,
-      tools: {
-        quantifyAnomalyImpact: tool({
-          description:
-            "Quantifica o volume afetado, concentração percentual e perda financeira evitável da anomalia sistêmica.",
-          parameters: z.object({
-            anomalyId: z.string(),
+  type SubmittedContainmentShape = z.infer<typeof SubmitContainmentSchema>;
+
+  const buildImpactTrace = (step: number): AgentToolTrace => ({
+    step,
+    toolName: "quantifyAnomalyImpact",
+    summary: `${anomaly.affectedOrdersCount} pedidos • Exposição R$ ${anomaly.financialExposureBRL.toFixed(
+      2
+    )} • Economia R$ ${anomaly.avoidableCostBRL.toFixed(2)}`,
+    inputPreview: `anomaly=${anomaly.id}`,
+    outputPreview: anomaly.concentrationMetric,
+  });
+
+  const buildRoutingTrace = (step: number): AgentToolTrace => ({
+    step,
+    toolName: "simulateContainmentRouting",
+    summary: `Bloquear [${anomaly.targetEntity}] -> ativar [${anomaly.replacementTarget}]`,
+    inputPreview: anomaly.targetEntity,
+    outputPreview: anomaly.recommendedContainmentRule,
+  });
+
+  let toolTraces: AgentToolTrace[] = [];
+  let submittedContainment: SubmittedContainmentShape | null = null;
+  let fallbackText = "";
+  let modelUsed = "contingencia-operacional";
+
+  const groq = getGroqProvider();
+
+  if (groq) {
+    const llmResult = await runWithModelFallback(async (modelName) => {
+      const attemptTraces: AgentToolTrace[] = [];
+      let stepCounter = 0;
+
+      const gen = await generateText({
+        model: groq(modelName),
+        temperature: 0.1,
+        maxRetries: 0,
+        maxSteps: 3,
+        system: `Especialista de operações logísticas e industriais da Gogroup.
+Passo 1: chame auditAnomaly.
+Passo 2: chame submitContainmentOrder com valores exatos em R$ e instrução objetiva para CD/Logística/TI.`,
+        prompt: `Gere ordem de contenção para "${anomaly.title}" (${anomaly.concentrationMetric}, exposição R$ ${anomaly.financialExposureBRL.toFixed(2)}).`,
+        tools: {
+          auditAnomaly: tool({
+            description: "Quantifica volume afetado, economia e substituto operacional.",
+            parameters: z.object({}),
+            execute: async () => {
+              attemptTraces.push(
+                buildImpactTrace(++stepCounter),
+                buildRoutingTrace(++stepCounter)
+              );
+              return {
+                id: anomaly.id,
+                area: anomaly.area,
+                count: anomaly.affectedOrdersCount,
+                metric: anomaly.concentrationMetric,
+                exposureBRL: anomaly.financialExposureBRL,
+                avoidableBRL: anomaly.avoidableCostBRL,
+                blocked: anomaly.targetEntity,
+                substitute: anomaly.replacementTarget,
+                rule: anomaly.recommendedContainmentRule,
+                samples: sampleOrders.slice(0, 4).map((s) => s.order_id),
+              };
+            },
           }),
-          execute: async () => {
-            stepCounter++;
-            const stats = {
-              id: anomaly.id,
-              area: anomaly.area,
-              affectedOrdersCount: anomaly.affectedOrdersCount,
-              concentrationMetric: anomaly.concentrationMetric,
-              financialExposureBRL: anomaly.financialExposureBRL,
-              avoidableCostBRL: anomaly.avoidableCostBRL,
-              sampleOrderIds: sampleOrders.slice(0, 5).map((s) => s.order_id),
-            };
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "quantifyAnomalyImpact",
-              summary: `${anomaly.affectedOrdersCount} pedidos atingidos • Exposição R$ ${anomaly.financialExposureBRL.toFixed(
-                2
-              )} • Economia direta R$ ${anomaly.avoidableCostBRL.toFixed(2)}`,
-              inputPreview: `anomaly=${anomaly.id}`,
-              outputPreview: anomaly.concentrationMetric,
-            });
-            return stats;
-          },
-        }),
 
-        simulateContainmentRouting: tool({
-          description:
-            "Valida a capacidade operacional do substituto (máquina, lote, transportadora ou trava WMS/Checkout).",
-          parameters: z.object({
-            targetToBlock: z.string(),
-            candidateSubstitute: z.string(),
+          submitContainmentOrder: tool({
+            description: "Registra a ordem de contenção final.",
+            parameters: SubmitContainmentSchema,
           }),
-          execute: async (args) => {
-            stepCounter++;
-            const result = {
-              feasible: true,
-              blockedTarget: anomaly.targetEntity,
-              approvedSubstitute: anomaly.replacementTarget,
-              recommendedRule: anomaly.recommendedContainmentRule,
-              slaImpact: "Zero degradação de SLA; elimina reincidência na fila humana.",
-            };
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "simulateContainmentRouting",
-              summary: `Roteamento validado: bloquear [${anomaly.targetEntity}] -> ativar [${anomaly.replacementTarget}]`,
-              inputPreview: `${args.targetToBlock} -> ${args.candidateSubstitute}`,
-              outputPreview: anomaly.recommendedContainmentRule,
-            });
-            return result;
-          },
-        }),
+        },
+      });
 
-        submitContainmentOrder: tool({
-          description:
-            "Emite a Ordem de Contenção Operacional estruturada para ativação imediata no motor da Central.",
-          parameters: z.object({
-            title: z.string(),
-            executiveDiagnosis: z.string(),
-            ruleSummary: z.string(),
-            blockedTarget: z.string(),
-            redirectTarget: z.string(),
-            technicalDispatchMessage: z
-              .string()
-              .describe("Ordem de serviço objetiva para CD/Logística/TI executar agora"),
-          }),
-          execute: async (args) => {
-            containmentHolder.current = args;
-            stepCounter++;
-            toolTraces.push({
-              step: stepCounter,
-              toolName: "submitContainmentOrder",
-              summary: `Ordem de Contenção emitida: ${args.ruleSummary.slice(0, 110)}`,
-              inputPreview: args.blockedTarget,
-              outputPreview: args.redirectTarget,
-            });
-            return { status: "containment_ready" };
-          },
-        }),
+      const submitCall = gen.steps
+        .flatMap((s) => s.toolCalls)
+        .find((tc) => tc.toolName === "submitContainmentOrder");
+
+      let parsedOrder: SubmittedContainmentShape | null = null;
+      if (submitCall) {
+        const parsed = SubmitContainmentSchema.safeParse(submitCall.args);
+        if (parsed.success) {
+          parsedOrder = parsed.data;
+          stepCounter++;
+          attemptTraces.push({
+            step: stepCounter,
+            toolName: "submitContainmentOrder",
+            summary: `Ordem emitida: ${parsedOrder.ruleSummary.slice(0, 110)}`,
+            inputPreview: parsedOrder.blockedTarget,
+            outputPreview: parsedOrder.redirectTarget,
+          });
+        }
+      }
+
+      return { gen, attemptTraces, parsedOrder };
+    });
+
+    if (llmResult) {
+      modelUsed = llmResult.modelUsed;
+      toolTraces = llmResult.output.attemptTraces;
+      submittedContainment = llmResult.output.parsedOrder;
+      fallbackText = llmResult.output.gen.text?.trim() || "";
+    }
+  }
+
+  if (toolTraces.length === 0) {
+    toolTraces = [
+      buildImpactTrace(1),
+      buildRoutingTrace(2),
+      {
+        step: 3,
+        toolName: "submitContainmentOrder",
+        summary: `Ordem calculada pelo motor operacional: ${anomaly.recommendedContainmentRule.slice(
+          0,
+          100
+        )}`,
+        inputPreview: anomaly.targetEntity,
+        outputPreview: anomaly.replacementTarget,
       },
-    })
-  );
-
-  const submittedContainment = containmentHolder.current;
+    ];
+  }
 
   const plan: SystemicContainmentPlan = {
     anomalyId: anomaly.id,
     title: submittedContainment?.title || anomaly.title,
     executiveDiagnosis:
       submittedContainment?.executiveDiagnosis ||
-      generation.text?.trim() ||
+      fallbackText ||
       anomaly.rootCauseEvidence,
     ruleSummary:
       submittedContainment?.ruleSummary || anomaly.recommendedContainmentRule,
@@ -689,11 +751,15 @@ Use números exatos em R$, cite a concentração estatística real e redija um c
       submittedContainment?.redirectTarget || anomaly.replacementTarget,
     technicalDispatchMessage:
       submittedContainment?.technicalDispatchMessage ||
-      `[ORDEM DE CONTENÇÃO IMEDIATA - ${anomaly.area}] Bloquear ${anomaly.targetEntity} e redirecionar fluxo para ${anomaly.replacementTarget}. Evidência: ${anomaly.concentrationMetric}.`,
+      `[CONTENÇÃO IMEDIATA - ${anomaly.area}] Bloquear ${anomaly.targetEntity} e redirecionar fluxo para ${anomaly.replacementTarget}. Evidência: ${anomaly.concentrationMetric}.`,
     estimatedSavingsBRL: anomaly.avoidableCostBRL,
     modelUsed,
     toolTraces,
   };
+
+  if (modelUsed !== "contingencia-operacional") {
+    setCachedResponse(cacheKey, plan);
+  }
 
   return NextResponse.json(plan);
 }
