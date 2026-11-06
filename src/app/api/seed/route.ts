@@ -24,25 +24,52 @@ function parseCsvFile<T = Record<string, string>>(filePath: string): T[] {
   return parsed.data;
 }
 
+let cachedRemotePayload: SeedPayload | null = null;
+let cachedRemoteUrl: string | null = null;
+
 export async function GET() {
   try {
-    // 1. Produção Vercel: busca do GitHub Gist Secreto no servidor (sem expor a URL privada ao cliente)
-    const remoteUrl = process.env.SEED_DATA_URL?.trim();
+    // 1. Produção Vercel / Gist Secreto: busca no servidor sem expor SEED_DATA_URL ao navegador
+    const remoteUrl = process.env.SEED_DATA_URL?.trim().replace(/^['"]|['"]$/g, "");
     if (remoteUrl) {
+      if (cachedRemotePayload && cachedRemoteUrl === remoteUrl) {
+        return NextResponse.json(cachedRemotePayload);
+      }
+
       const response = await fetch(remoteUrl, {
         cache: "no-store",
-        headers: { Accept: "application/json" },
       });
       if (!response.ok) {
         throw new Error(
           `Falha ao buscar SEED_DATA_URL (HTTP ${response.status})`
         );
       }
-      const data = await response.json();
-      return NextResponse.json({
-        ...data,
+      const rawText = await response.text();
+      const data = JSON.parse(rawText);
+
+      if (
+        !Array.isArray(data?.orders) ||
+        !Array.isArray(data?.customers) ||
+        !Array.isArray(data?.carriers)
+      ) {
+        throw new Error(
+          "O JSON retornado por SEED_DATA_URL não contém as coleções esperadas (orders, customers, carriers)."
+        );
+      }
+
+      const payload: SeedPayload = {
+        generatedAt: data.generatedAt ?? new Date().toISOString(),
+        referenceDate: data.referenceDate ?? "2026-09-30",
+        orders: data.orders,
+        customers: data.customers,
+        carriers: data.carriers,
         sourceMode: "remote_gist",
-      } satisfies SeedPayload);
+      };
+
+      cachedRemotePayload = payload;
+      cachedRemoteUrl = remoteUrl;
+
+      return NextResponse.json(payload);
     }
 
     // 2. Fallback rápido local (.local-seed.json gerado por npm run generate:seed)
