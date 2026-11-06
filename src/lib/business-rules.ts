@@ -34,11 +34,41 @@ export function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+/**
+ * Normaliza datas vindas de CSV ou formulários (aceita YYYY-MM-DD, ISO completo ou DD/MM/YYYY).
+ * Evita RangeError (Invalid time value) em d.toISOString().
+ */
+export function normalizeIsoDate(
+  raw: string | null | undefined,
+  fallback: string = REFERENCE_DATE
+): string {
+  if (!raw) return fallback;
+  const trimmed = raw.trim();
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const candidate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+    const d = new Date(`${candidate}T12:00:00Z`);
+    if (!Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === candidate) {
+      return candidate;
+    }
+  }
+  const brMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (brMatch) {
+    const candidate = `${brMatch[3]}-${brMatch[2]}-${brMatch[1]}`;
+    const d = new Date(`${candidate}T12:00:00Z`);
+    if (!Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === candidate) {
+      return candidate;
+    }
+  }
+  return fallback;
+}
+
 export function isBusinessDay(isoDate: string): boolean {
-  const d = new Date(`${isoDate}T12:00:00Z`);
+  const safeIso = normalizeIsoDate(isoDate);
+  const d = new Date(`${safeIso}T12:00:00Z`);
   const dow = d.getUTCDay();
   if (dow === 0 || dow === 6) return false;
-  return !NATIONAL_HOLIDAYS.has(isoDate);
+  return !NATIONAL_HOLIDAYS.has(safeIso);
 }
 
 /**
@@ -46,7 +76,8 @@ export function isBusinessDay(isoDate: string): boolean {
  * Conforme parametros.md: a contagem começa no 1º dia útil após o pedido (dia de separação = dia 1).
  */
 export function addBusinessDays(startIsoDate: string, businessDays: number): string {
-  const d = new Date(`${startIsoDate}T12:00:00Z`);
+  const safeStart = normalizeIsoDate(startIsoDate);
+  const d = new Date(`${safeStart}T12:00:00Z`);
   let added = 0;
   while (added < businessDays) {
     d.setUTCDate(d.getUTCDate() + 1);
@@ -64,9 +95,12 @@ export function addBusinessDays(startIsoDate: string, businessDays: number): str
  * Se `refIsoDate <= dueIsoDate`, retorna 0.
  */
 export function countBusinessDaysBetween(dueIsoDate: string, refIsoDate: string): number {
-  if (!dueIsoDate || !refIsoDate || refIsoDate <= dueIsoDate) return 0;
-  const d = new Date(`${dueIsoDate}T12:00:00Z`);
-  const end = new Date(`${refIsoDate}T12:00:00Z`);
+  if (!dueIsoDate || !refIsoDate) return 0;
+  const safeDue = normalizeIsoDate(dueIsoDate);
+  const safeRef = normalizeIsoDate(refIsoDate);
+  if (safeRef <= safeDue) return 0;
+  const d = new Date(`${safeDue}T12:00:00Z`);
+  const end = new Date(`${safeRef}T12:00:00Z`);
   let count = 0;
   while (d < end) {
     d.setUTCDate(d.getUTCDate() + 1);
@@ -81,8 +115,10 @@ export function countBusinessDaysBetween(dueIsoDate: string, refIsoDate: string)
 
 export function countCalendarDaysBetween(startIso: string, endIso: string): number {
   if (!startIso || !endIso) return 0;
-  const start = new Date(`${startIso}T12:00:00Z`).getTime();
-  const end = new Date(`${endIso}T12:00:00Z`).getTime();
+  const safeStart = normalizeIsoDate(startIso);
+  const safeEnd = normalizeIsoDate(endIso);
+  const start = new Date(`${safeStart}T12:00:00Z`).getTime();
+  const end = new Date(`${safeEnd}T12:00:00Z`).getTime();
   return Math.max(0, Math.round((end - start) / (1000 * 60 * 60 * 24)));
 }
 
@@ -556,8 +592,28 @@ export function calculateOrderEconomics(
  * Em carteiras com múltiplos pedidos, só unifica caixa física se:
  * 1) Mesmo CD + 2) Mesma UF e cidade + 3) Ambos com ação de reenvio físico.
  */
-export function checkTripleFreightLock(orders: EnrichedOrder[]): boolean {
-  const reshipOrders = orders.filter((o) => o.requiresPhysicalReship);
+function resolveChosenQuote(
+  order: EnrichedOrder,
+  chosenActions?: Record<string, RecommendedActionType>
+): ActionOptionQuote {
+  const act = chosenActions?.[order.order_id];
+  if (!act) return order.economics.recommendedOption;
+  const all = [
+    order.economics.recommendedOption,
+    ...order.economics.alternativeOptions,
+  ];
+  return (
+    all.find((q) => q.action === act) ?? order.economics.recommendedOption
+  );
+}
+
+export function checkTripleFreightLock(
+  orders: EnrichedOrder[],
+  chosenActions?: Record<string, RecommendedActionType>
+): boolean {
+  const reshipOrders = orders.filter(
+    (o) => resolveChosenQuote(o, chosenActions).requiresPhysicalReship
+  );
   if (reshipOrders.length < 2) return false;
   const first = reshipOrders[0];
   return reshipOrders.every(
@@ -566,18 +622,20 @@ export function checkTripleFreightLock(orders: EnrichedOrder[]): boolean {
 }
 
 /**
- * Calcula a economia de frete por consolidação física agrupando por CD + UF + Cidade.
- * Pedidos em CDs distintos nunca dividem a mesma caixa, mas 2+ pedidos no mesmo CD/destino consolidam entre si.
+ * Calcula a economia de frete por consolidação física agrupando por CD + UF + Cidade,
+ * respeitando a ação efetivamente selecionada (ex.: se virou Voucher/Reembolso, não há caixa física).
  */
 export function calculateFreightConsolidationSavings(
-  orders: EnrichedOrder[]
+  orders: EnrichedOrder[],
+  chosenActions?: Record<string, RecommendedActionType>
 ): number {
-  const groups = new Map<string, EnrichedOrder[]>();
+  const groups = new Map<string, ActionOptionQuote[]>();
   for (const o of orders) {
-    if (!o.requiresPhysicalReship) continue;
+    const quote = resolveChosenQuote(o, chosenActions);
+    if (!quote.requiresPhysicalReship) continue;
     const key = `${o.cd}|${o.uf}|${o.cidade}`;
     const list = groups.get(key) ?? [];
-    list.push(o);
+    list.push(quote);
     groups.set(key, list);
   }
   let savings = 0;
@@ -585,10 +643,7 @@ export function calculateFreightConsolidationSavings(
     if (list.length >= 2) {
       savings += list
         .slice(1)
-        .reduce(
-          (acc, o) => acc + o.economics.recommendedOption.carrierFreightBRL,
-          0
-        );
+        .reduce((acc, q) => acc + q.carrierFreightBRL, 0);
     }
   }
   return round2(savings);

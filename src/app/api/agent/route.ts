@@ -495,8 +495,19 @@ Regras:
     };
   });
 
-  const freightConsolidationDiscount =
-    calculateFreightConsolidationSavings(enrichedOrders);
+  const finalActionMap: Record<string, RecommendedActionType> = {};
+  for (const d of finalDecisions) {
+    finalActionMap[d.order_id] = d.recommendedAction;
+  }
+
+  const effectiveCanConsolidateBox = checkTripleFreightLock(
+    enrichedOrders,
+    finalActionMap
+  );
+  const freightConsolidationDiscount = calculateFreightConsolidationSavings(
+    enrichedOrders,
+    finalActionMap
+  );
 
   const totalNetExecutionCostBRL = round2(
     Math.max(
@@ -526,8 +537,8 @@ Regras:
     )} em receita/LTV com custo direto de execução de R$ ${totalNetExecutionCostBRL.toFixed(
       2
     )}${
-      canConsolidateBox
-        ? `, caixa única (-R$ ${freightConsolidationDiscount.toFixed(2)} em frete)`
+      freightConsolidationDiscount > 0
+        ? `, consolidação logística (-R$ ${freightConsolidationDiscount.toFixed(2)} em frete)`
         : ""
     }${
       totalCarrierClaimsBRL > 0
@@ -543,7 +554,9 @@ Regras:
     .map(
       (d) =>
         `${d.order_id}: ${ACTION_LABELS[d.recommendedAction]}${
-          d.targetCarrier && !d.targetCarrier.includes("Sem frete")
+          d.targetCarrier &&
+          !d.targetCarrier.startsWith("N/A") &&
+          !d.targetCarrier.includes("Sem frete")
             ? ` via ${d.targetCarrier}`
             : ""
         }`
@@ -553,8 +566,8 @@ Regras:
   const responsePlan: PortfolioResolutionPlan = {
     customer_id: customer.customer_id,
     executiveSummary: submittedPlanArgs?.executiveSummary || fallbackSummary,
-    consolidatePhysicalShipment: canConsolidateBox,
-    consolidationExplanation: canConsolidateBox
+    consolidatePhysicalShipment: effectiveCanConsolidateBox,
+    consolidationExplanation: effectiveCanConsolidateBox
       ? submittedPlanArgs?.consolidationExplanation ||
         `Envios unificados no ${firstOrder.cd} para ${firstOrder.cidade}/${firstOrder.uf}, economizando R$ ${freightConsolidationDiscount.toFixed(2)} em frete.`
       : submittedPlanArgs?.consolidationExplanation ||

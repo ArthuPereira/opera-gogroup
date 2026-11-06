@@ -9,6 +9,7 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
+import { NORTHEAST_CRITICAL_UFS } from "@/lib/business-rules";
 import { formatBRL } from "@/lib/format";
 import {
   ContainmentOrder,
@@ -43,15 +44,39 @@ export function SystemicRadarTab({
     try {
       const sampleOrders = allOrders
         .filter((o) => {
-          if (anomaly.id === "imp_02_gocase") return o.maquina === "IMP-02";
-          if (anomaly.id === "lote_l2607b_apice")
-            return o.lote_produto === "L2607-B";
-          if (anomaly.id === "cd2_noite_brinde")
-            return o.cd === "CD2" && o.turno === "noite";
-          if (anomaly.id === "rota_express_nordeste")
-            return o.transportadora === "Rota Express";
-          if (anomaly.id === "carga_norte_lescent_kokeshi")
-            return o.transportadora === "Carga Norte" || o.marca === "Kokeshi";
+          if (anomaly.id === "imp_02_gocase") {
+            return (
+              o.tipo_excecao === "falha_personalizacao" && o.maquina === "IMP-02"
+            );
+          }
+          if (anomaly.id === "lote_l2607b_apice") {
+            return (
+              o.tipo_excecao === "vazamento_produto" &&
+              o.lote_produto === "L2607-B"
+            );
+          }
+          if (anomaly.id === "cd2_noite_brinde") {
+            return (
+              o.tipo_excecao === "item_faltante" &&
+              o.cd === "CD2" &&
+              o.turno === "noite"
+            );
+          }
+          if (anomaly.id === "rota_express_nordeste") {
+            return (
+              o.transportadora === "Rota Express" &&
+              NORTHEAST_CRITICAL_UFS.has(o.uf)
+            );
+          }
+          if (anomaly.id === "carga_norte_lescent_kokeshi") {
+            return (
+              (o.tipo_excecao === "avaria_transporte" &&
+                o.transportadora === "Carga Norte") ||
+              (o.tipo_excecao === "ruptura_pos_venda" &&
+                o.marca === "Kokeshi" &&
+                ["KSH-1010", "KSH-1011", "KSH-1009"].includes(o.sku))
+            );
+          }
           return o.calendarBugDetected;
         })
         .slice(0, 6)

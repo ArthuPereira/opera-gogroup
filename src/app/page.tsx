@@ -165,7 +165,7 @@ export default function OperaDashboardPage() {
       autoTriagedOrders.length * 9.0 + resolvedSavings
     );
     const resolvedTreatmentsCount = new Set(
-      resolvedOrders.map((o) => o.customer_id)
+      resolvedOrders.map((o) => o.resolutionBatchId ?? o.customer_id)
     ).size;
     const potentialClaimPoolBRL = round2(
       activeEnriched.reduce(
@@ -281,16 +281,7 @@ export default function OperaDashboardPage() {
       return { portfolios, orders };
     }
 
-    const remainingSlotsToday = Math.max(
-      1,
-      DAILY_HUMAN_CAPACITY - computed.resolvedTreatmentsCount
-    );
-    const basePool =
-      filters.scope === "top150" && !q
-        ? computed.allPortfolios.slice(0, remainingSlotsToday)
-        : computed.allPortfolios;
-
-    const portfolios = basePool
+    const matchingPortfolios = computed.allPortfolios
       .map((p) => {
         const matchedOrders = p.orders.filter(matchesOrder);
         if (matchedOrders.length === 0) return null;
@@ -299,6 +290,15 @@ export default function OperaDashboardPage() {
         return p;
       })
       .filter((p): p is CustomerPortfolio => p !== null);
+
+    const remainingSlotsToday = Math.max(
+      1,
+      DAILY_HUMAN_CAPACITY - computed.resolvedTreatmentsCount
+    );
+    const portfolios =
+      filters.scope === "top150" && !q
+        ? matchingPortfolios.slice(0, remainingSlotsToday)
+        : matchingPortfolios;
 
     const allowedCustomerIds = new Set(portfolios.map((p) => p.customer_id));
     const orders = computed.activeEnriched
@@ -358,6 +358,7 @@ export default function OperaDashboardPage() {
     const res = await executePortfolioResolution({
       customerId: params.portfolio.customer_id,
       enrichedOrders: params.selectedOrders,
+      portfolioTotalOrdersCount: params.portfolio.orders.length,
       plan: params.plan,
       actionOverrides: params.actionOverrides,
       customMessage: params.customMessage,
@@ -558,6 +559,7 @@ export default function OperaDashboardPage() {
         onIngestOrders={async (orders: RawOrder[], source) => {
           const result = await ingestNewOrders(orders, source);
           if (orders.length === 1 && result.activeAdded === 1) {
+            setFilters({ ...DEFAULT_FILTERS, scope: "all_active" });
             setSelectedCustomerId(orders[0].customer_id);
             setActiveSection("queue");
           }

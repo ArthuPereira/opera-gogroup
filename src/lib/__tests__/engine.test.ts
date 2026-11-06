@@ -8,6 +8,7 @@ import {
   checkTripleFreightLock,
   countBusinessDaysBetween,
   enrichOrderRecord,
+  normalizeIsoDate,
 } from "../business-rules";
 import { parseOrdersCsv, serializeEnrichedOrdersCsv } from "../csv-io";
 import { buildCustomerPortfolios, compareAiFirstVsFifo } from "../priority-engine";
@@ -93,6 +94,29 @@ describe("Motor Determinístico Opera Gogroup", () => {
     // Com 2 pedidos no CD1 + 1 no CD2, consolida os 2 do CD1 (economiza R$ 23,00) e mantém CD2 separado
     expect(calculateFreightConsolidationSavings([o1, o3DiffCd])).toBe(0);
     expect(calculateFreightConsolidationSavings([o1, o2Same, o3DiffCd])).toBe(23);
+
+    // Ao mudar um dos pedidos para ação digital (voucher_credito), desfaz a caixa única física
+    expect(
+      checkTripleFreightLock([o1, o2Same], { GB2: "voucher_credito" })
+    ).toBe(false);
+    expect(
+      calculateFreightConsolidationSavings([o1, o2Same], {
+        GB2: "voucher_credito",
+      })
+    ).toBe(0);
+  });
+
+  it("normaliza datas inválidas ou em formato BR no CSV sem estourar RangeError", () => {
+    expect(normalizeIsoDate("25/09/2026")).toBe("2026-09-25");
+    expect(normalizeIsoDate("2026-09-25T14:30:00Z")).toBe("2026-09-25");
+    expect(normalizeIsoDate("2026-02-31", "2026-09-30")).toBe("2026-09-30");
+    expect(addBusinessDays("invalido", 1)).toBe("2026-10-01");
+
+    const parsed = parseOrdersCsv(
+      "order_id,customer_id,valor,data_pedido,data_entrega\nPED-A,CL9,149.90,25/09/2026,\n"
+    );
+    expect(parsed[0].data_pedido).toBe("2026-09-25");
+    expect(parsed[0].data_entrega).toBeNull();
   });
 
   it.skipIf(!hasLocalSeed)(

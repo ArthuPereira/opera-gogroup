@@ -69,6 +69,7 @@ export interface OrderRecord extends RawOrder {
   resolvedSavingsBRL?: number;
   resolvedCostBRL?: number;
   resolvedAt?: string;
+  resolutionBatchId?: string;
   claimId?: string;
   source?: "seed" | "manual" | "csv_upload";
 }

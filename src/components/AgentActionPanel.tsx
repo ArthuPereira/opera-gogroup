@@ -71,6 +71,7 @@ export function AgentActionPanel({
     Record<string, RecommendedActionType>
   >({});
   const [customMessage, setCustomMessage] = useState("");
+  const [isMessageEdited, setIsMessageEdited] = useState(false);
 
   const orderIdsSignature = portfolio
     ? portfolio.orders.map((o) => o.order_id).join(",")
@@ -79,6 +80,7 @@ export function AgentActionPanel({
   useEffect(() => {
     setAgentError(null);
     setActionOverrides({});
+    setIsMessageEdited(false);
     if (!portfolio) {
       setSelectedOrderIds([]);
       return;
@@ -125,12 +127,22 @@ export function AgentActionPanel({
   const cachedPlan = planKey ? cachedPlans[planKey] ?? null : null;
 
   useEffect(() => {
+    setIsMessageEdited(false);
+  }, [planKey]);
+
+  const hasManualActionOverrides = Object.keys(actionOverrides).length > 0;
+
+  useEffect(() => {
     if (!portfolio || selectedOrders.length === 0) {
       setCustomMessage("");
       return;
     }
 
-    if (cachedPlan) {
+    if (isMessageEdited) {
+      return;
+    }
+
+    if (cachedPlan && !hasManualActionOverrides) {
       setCustomMessage(cachedPlan.customerMessage);
       return;
     }
@@ -142,14 +154,25 @@ export function AgentActionPanel({
     const summaryActions = selectedOrders
       .map((o) => {
         const act =
-          actionOverrides[o.order_id] ?? o.economics.recommendedOption.action;
+          actionOverrides[o.order_id] ??
+          cachedPlan?.decisions.find((d) => d.order_id === o.order_id)
+            ?.recommendedAction ??
+          o.economics.recommendedOption.action;
         return `${o.order_id}: ${ACTION_LABELS[act]}`;
       })
       .join(" | ");
     setCustomMessage(
       `Olá! Revisamos ${orderListText} e já liberamos a solução prioritária (${summaryActions}). Qualquer dúvida, responda por aqui.`
     );
-  }, [portfolio?.customer_id, planKey, cachedPlan, selectedOrders, actionOverrides]);
+  }, [
+    portfolio?.customer_id,
+    planKey,
+    cachedPlan,
+    selectedOrders,
+    actionOverrides,
+    hasManualActionOverrides,
+    isMessageEdited,
+  ]);
 
   if (!portfolio) {
     return (
@@ -209,6 +232,8 @@ export function AgentActionPanel({
 
       const plan = data as PortfolioResolutionPlan;
       onPlanGenerated(planKey, plan);
+      setActionOverrides({});
+      setIsMessageEdited(false);
       setCustomMessage(plan.customerMessage);
     } catch (err) {
       setAgentError(
@@ -235,9 +260,23 @@ export function AgentActionPanel({
     }
   }
 
-  const selectedFreightSavings =
-    calculateFreightConsolidationSavings(selectedOrders);
-  const selectedCanConsolidate = checkTripleFreightLock(selectedOrders);
+  const effectiveActionMap: Record<string, RecommendedActionType> = {};
+  for (const o of selectedOrders) {
+    effectiveActionMap[o.order_id] =
+      actionOverrides[o.order_id] ??
+      cachedPlan?.decisions.find((d) => d.order_id === o.order_id)
+        ?.recommendedAction ??
+      o.economics.recommendedOption.action;
+  }
+
+  const selectedFreightSavings = calculateFreightConsolidationSavings(
+    selectedOrders,
+    effectiveActionMap
+  );
+  const selectedCanConsolidate = checkTripleFreightLock(
+    selectedOrders,
+    effectiveActionMap
+  );
 
   const selectedRiskBRL = round2(
     selectedOrders.reduce(
@@ -634,7 +673,10 @@ export function AgentActionPanel({
           <textarea
             rows={3}
             value={customMessage}
-            onChange={(e) => setCustomMessage(e.target.value)}
+            onChange={(e) => {
+              setIsMessageEdited(true);
+              setCustomMessage(e.target.value);
+            }}
             className="mt-2 w-full rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-800 focus:border-slate-400 focus:outline-none"
           />
         </details>

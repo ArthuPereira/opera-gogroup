@@ -140,50 +140,88 @@ export async function ingestNewOrders(
     buildOrderRecordFromRaw(raw, carrierMap, source)
   );
 
-  const autoTriaged = records.filter(
+  // Deduplica por order_id mantendo a última ocorrência caso o CSV repita o mesmo pedido
+  const dedupMap = new Map<string, OrderRecord>();
+  for (const r of records) {
+    dedupMap.set(r.order_id, r);
+  }
+  const uniqueRecords = Array.from(dedupMap.values());
+
+  const autoTriaged = uniqueRecords.filter(
     (r) => r.workflowStatus === "auto_triaged"
   ).length;
-  const activeAdded = records.length - autoTriaged;
+  const activeAdded = uniqueRecords.length - autoTriaged;
 
   await db.transaction("rw", [db.orders, db.customers, db.auditLogs], async () => {
-    for (const r of records) {
-      const exists = await db.customers.get(r.customer_id);
+    const existingOrders = await db.orders.bulkGet(
+      uniqueRecords.map((r) => r.order_id)
+    );
+    const existingOrderIds = new Set(
+      existingOrders.filter((o): o is OrderRecord => Boolean(o)).map((o) => o.order_id)
+    );
+
+    const customerDeltas = new Map<
+      string,
+      { addCount: number; addRevenue: number; firstDate: string }
+    >();
+    for (const r of uniqueRecords) {
+      if (existingOrderIds.has(r.order_id)) continue;
+      const cur = customerDeltas.get(r.customer_id) ?? {
+        addCount: 0,
+        addRevenue: 0,
+        firstDate: r.data_pedido,
+      };
+      cur.addCount += 1;
+      cur.addRevenue = round2(cur.addRevenue + r.valor);
+      if (r.data_pedido < cur.firstDate) cur.firstDate = r.data_pedido;
+      customerDeltas.set(r.customer_id, cur);
+    }
+
+    for (const [cid, delta] of customerDeltas.entries()) {
+      const exists = await db.customers.get(cid);
       if (!exists) {
         await db.customers.put({
-          customer_id: r.customer_id,
-          n_pedidos: 1,
-          receita_acumulada: r.valor,
-          data_primeiro_pedido: r.data_pedido,
+          customer_id: cid,
+          n_pedidos: delta.addCount,
+          receita_acumulada: delta.addRevenue,
+          data_primeiro_pedido: delta.firstDate,
           n_contatos_atendimento: 1,
+        });
+      } else {
+        await db.customers.update(cid, {
+          n_pedidos: exists.n_pedidos + delta.addCount,
+          receita_acumulada: round2(exists.receita_acumulada + delta.addRevenue),
         });
       }
     }
 
-    await db.orders.bulkPut(records);
+    await db.orders.bulkPut(uniqueRecords);
 
     await db.auditLogs.add({
       timestamp: new Date().toISOString(),
       actor: "motor_deterministico",
       actionTitle:
         source === "manual"
-          ? `Novo pedido (${records[0]?.order_id})`
-          : `Importação CSV (${records.length} pedidos)`,
-      targetIds: records.slice(0, 10).map((r) => r.order_id),
+          ? `Novo pedido (${uniqueRecords[0]?.order_id})`
+          : `Importação CSV (${uniqueRecords.length} pedidos)`,
+      targetIds: uniqueRecords.slice(0, 10).map((r) => r.order_id),
       financialImpactBRL: round2(autoTriaged * 9.0),
       details: `${autoTriaged} resolvido(s) na triagem • ${activeAdded} enviado(s) para a fila.`,
     });
   });
 
-  return { totalAdded: records.length, autoTriaged, activeAdded };
+  return { totalAdded: uniqueRecords.length, autoTriaged, activeAdded };
 }
 
 export async function revertAutoTriagedOrderToHumanQueue(orderId: string): Promise<void> {
   const order = await db.orders.get(orderId);
   if (!order) return;
+  const previousCategory = order.autoTriageCategory;
 
   await db.transaction("rw", [db.orders, db.auditLogs], async () => {
     await db.orders.update(orderId, {
       workflowStatus: "active_queue",
+      autoTriageCategory: "none",
       manualOverrideFromAuto: true,
       status: "em_analise",
     });
@@ -191,10 +229,10 @@ export async function revertAutoTriagedOrderToHumanQueue(orderId: string): Promi
     await db.auditLogs.add({
       timestamp: new Date().toISOString(),
       actor: "operador_manual",
-      actionTitle: `Reversão de Auto-Triagem para Fila Humana (${orderId})`,
+      actionTitle: `Reversão de Triagem para Fila (${orderId})`,
       targetIds: [orderId],
       financialImpactBRL: 0,
-      details: `Pedido ${orderId} (regra anterior: ${order.autoTriageCategory}) movido manualmente de volta para a fila de tratativas humanas.`,
+      details: `Pedido ${orderId} (regra anterior: ${previousCategory}) movido manualmente para a fila de tratativas.`,
     });
   });
 }
@@ -202,17 +240,32 @@ export async function revertAutoTriagedOrderToHumanQueue(orderId: string): Promi
 export async function executePortfolioResolution(params: {
   customerId: string;
   enrichedOrders: EnrichedOrder[];
+  portfolioTotalOrdersCount?: number;
   plan?: PortfolioResolutionPlan | null;
   actionOverrides?: Record<string, RecommendedActionType>;
   customMessage?: string;
 }): Promise<{ resolvedCount: number; totalSavingsBRL: number; claimsOpened: number }> {
-  const { customerId, enrichedOrders, plan, actionOverrides = {}, customMessage } = params;
+  const {
+    customerId,
+    enrichedOrders,
+    portfolioTotalOrdersCount,
+    plan,
+    actionOverrides = {},
+    customMessage,
+  } = params;
   const nowIso = new Date().toISOString();
+  const batchId = `${customerId}-${Date.now()}`;
+  const ltvDivisor = Math.max(
+    1,
+    portfolioTotalOrdersCount ?? enrichedOrders.length,
+    enrichedOrders.length
+  );
 
   let totalSavingsBRL = 0;
   let claimsOpened = 0;
   const newClaims: CarrierClaim[] = [];
   const updatedOrders: OrderRecord[] = [];
+  const seenBoxKeys = new Set<string>();
 
   for (const order of enrichedOrders) {
     const agentDecision = plan?.decisions.find((d) => d.order_id === order.order_id);
@@ -229,24 +282,43 @@ export async function executePortfolioResolution(params: {
       allQuotes.find((q) => q.action === chosenAction) ??
       order.economics.recommendedOption;
 
-    // Economia gerada = exposição financeira evitada (risco direto + cliff + LTV/carteira proporcional) menos custo líquido da ação
+    // Aplica desconto real de consolidação de caixa para o 2º+ envio físico no mesmo CD/UF/cidade
+    let freightDiscount = 0;
+    if (matchedQuote.requiresPhysicalReship) {
+      const boxKey = `${order.cd}|${order.uf}|${order.cidade}`;
+      if (seenBoxKeys.has(boxKey)) {
+        freightDiscount = matchedQuote.carrierFreightBRL;
+      } else {
+        seenBoxKeys.add(boxKey);
+      }
+    }
+
+    const effectiveDirectCost = round2(
+      Math.max(0, matchedQuote.directCostBRL - freightDiscount)
+    );
+    const effectiveNetImpact = round2(
+      Math.max(0, matchedQuote.netImpactBRL - freightDiscount)
+    );
+
+    // Economia gerada = exposição evitada (risco direto + cliff + LTV rateado pelo total da carteira) menos impacto líquido
     const worstCaseLoss = round2(
       order.directOrderRiskBRL +
         order.marginalCliffBRL +
-        order.customerLtvAtRiskSingleBRL / Math.max(1, enrichedOrders.length)
+        order.customerLtvAtRiskSingleBRL / ltvDivisor
     );
-    const netCost = matchedQuote.netImpactBRL;
-    const savings = round2(Math.max(8, worstCaseLoss - netCost * 0.35));
+    const savings = round2(
+      Math.max(8, worstCaseLoss - effectiveNetImpact * 0.35 + freightDiscount)
+    );
     totalSavingsBRL = round2(totalSavingsBRL + savings);
 
     let claimId: string | undefined;
     if (
       order.economics.eligibleCarrierClaimBRL > 0 &&
-      (order.tipo_excecao === "extravio" || order.tipo_excecao === "avaria_transporte")
+      (order.tipo_excecao === "extravio" ||
+        order.tipo_excecao === "avaria_transporte") &&
+      agentDecision?.openCarrierClaim !== false
     ) {
-      claimId = `SIN-${order.order_id.replace(/[^0-9]/g, "").slice(-5)}-${
-        claimsOpened + 1
-      }`;
+      claimId = `SIN-${order.order_id}`;
       claimsOpened++;
       newClaims.push({
         claim_id: claimId,
@@ -295,14 +367,18 @@ export async function executePortfolioResolution(params: {
       status: "resolvida",
       resolvedAction: chosenAction,
       resolvedCarrier:
-        agentDecision?.targetCarrier ?? matchedQuote.recommendedCarrier,
+        chosenAction === agentDecision?.recommendedAction &&
+        agentDecision?.targetCarrier
+          ? agentDecision.targetCarrier
+          : matchedQuote.recommendedCarrier,
       resolvedNote:
         customMessage ||
         plan?.executiveSummary ||
         matchedQuote.rationale,
       resolvedSavingsBRL: savings,
-      resolvedCostBRL: matchedQuote.directCostBRL,
+      resolvedCostBRL: effectiveDirectCost,
       resolvedAt: nowIso,
+      resolutionBatchId: batchId,
       claimId,
     });
   }

@@ -1,4 +1,5 @@
 import Papa from "papaparse";
+import { normalizeIsoDate, REFERENCE_DATE } from "./business-rules";
 import { EnrichedOrder, ExceptionType, RawOrder } from "./types";
 
 const VALID_EXCEPTIONS = new Set<ExceptionType>([
@@ -42,8 +43,22 @@ export function parseOrdersCsv(csvText: string): RawOrder[] {
     const brinde =
       brindeStr === "true" || brindeStr === "1" || brindeStr === "sim";
 
-    const dataPedido = String(row.data_pedido ?? "2026-09-24").trim();
+    const dataPedido = normalizeIsoDate(
+      String(row.data_pedido ?? ""),
+      "2026-09-24"
+    );
+    const dataPrometidaRaw = String(row.data_prometida ?? "").trim();
+    const dataPrometida = dataPrometidaRaw
+      ? normalizeIsoDate(dataPrometidaRaw, dataPedido)
+      : dataPedido;
     const dataEntregaRaw = String(row.data_entrega ?? "").trim();
+    const dataEntrega = dataEntregaRaw
+      ? normalizeIsoDate(dataEntregaRaw, "")
+      : "";
+    const dataAbertura = normalizeIsoDate(
+      String(row.data_abertura_excecao ?? ""),
+      REFERENCE_DATE
+    );
     const maquinaRaw = String(row.maquina ?? "").trim();
 
     rows.push({
@@ -61,15 +76,13 @@ export function parseOrdersCsv(csvText: string): RawOrder[] {
       transportadora: String(row.transportadora ?? "Veloz Log").trim(),
       uf: String(row.uf ?? "SP").trim().toUpperCase(),
       cidade: String(row.cidade ?? "São Paulo").trim(),
-      data_prometida: String(row.data_prometida ?? dataPedido).trim(),
-      data_entrega: dataEntregaRaw || null,
+      data_prometida: dataPrometida,
+      data_entrega: dataEntrega || null,
       maquina: maquinaRaw || null,
       turno: String(row.turno ?? "manhã").trim(),
       cd: String(row.cd ?? "CD1").trim().toUpperCase(),
       lote_produto: String(row.lote_produto ?? "L2608-A").trim(),
-      data_abertura_excecao: String(
-        row.data_abertura_excecao ?? "2026-09-30"
-      ).trim(),
+      data_abertura_excecao: dataAbertura,
     });
   }
 
