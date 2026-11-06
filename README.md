@@ -11,14 +11,14 @@ Plataforma **IPA (Intelligent Process Automation)** construída para transformar
    - Todas as ações automáticas ficam registradas na aba de governança com **reversão em 1 clique** para a fila humana.
 
 2. **Motor de Priorização Financeira por Carteira (Top 150 Tratativas/Dia):**
-   - Agrupa múltiplos pedidos abertos por `customer_id`, resolvendo toda a carteira num único atendimento;
+   - Agrupa múltiplos pedidos abertos por `customer_id`, permitindo aprovar toda a carteira de uma vez, filtrar por CD (`CD1` / `CD2`) ou selecionar pedidos individuais;
    - Score em Reais: `Risco Direto do Pedido + Urgência Marginal de Mudança de Faixa (Cliff SLA) + LTV 12m em Risco (1x por cliente) + Economia de Contatos SAC`;
-   - **Trava Tripla de Consolidação Física:** Só consolida reenvios na mesma caixa se `mesmo CD + mesma UF/cidade + >= 2 reenvios físicos`.
+   - **Trava Tripla de Consolidação Física:** Só consolida reenvios na mesma caixa se `mesmo CD + mesma UF/cidade + >= 2 reenvios físicos` (mantendo expedições independentes quando há CDs distintos).
 
 3. **Agente Operacional Groq (`POST /api/agent`):**
-   - Executa `openai/gpt-oss-120b` na Groq (com cascata de fallback automático para `openai/gpt-oss-20b` e `qwen/qwen3.8-27b`) orquestrando *tools* determinísticas (`inspectPortfolioContext`, `checkRecurrenceAnomalies`, `simulateOptimalEconomics`, `submitResolutionPlan`);
+   - Executa `openai/gpt-oss-20b` na Groq (com transbordo automático para `openai/gpt-oss-120b` e contingência determinística local) orquestrando auditoria de contexto, anomalias, simulação econômica e submissão estruturada do plano;
    - Aplica travas anti-reincidência automáticas (bloqueio de máquina descalibrada, lote com falha de vedação, redirecionamento logístico regional, proteção de itens frágeis, reexpedição 0% CMV em itens personalizados e protocolo de ressarcimento contra transportadoras);
-   - No **Radar Sistêmico**, emite **Ordens de Contenção Operacional** que passam a reger imediatamente as próximas decisões da fila.
+   - No painel de **Causas-Raiz**, emite **Ordens de Contenção Operacional** que passam a reger imediatamente as próximas decisões da fila.
 
 4. **Workspace Isolado por Visitante (`IndexedDB` / `Dexie`):**
    - Cada avaliador interage em seu próprio banco no navegador (aprovações em 1 clique, ingestão manual com *presets*, upload de lote `.csv`, exportação `.csv` filtrada e botão de *Reset*).
