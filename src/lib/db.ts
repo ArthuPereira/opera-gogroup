@@ -108,13 +108,13 @@ export async function ensureDatabaseSeeded(forceReset = false): Promise<void> {
           await db.auditLogs.add({
             timestamp: new Date().toISOString(),
             actor: "motor_deterministico",
-            actionTitle: `Auto-Triagem Inicial Zero-Toque (${totalAuto} pedidos limpos na entrada)`,
+            actionTitle: `Triagem automática concluída (${totalAuto} pedidos)`,
             targetIds: orderRecords
               .filter((o) => o.workflowStatus === "auto_triaged")
               .slice(0, 12)
               .map((o) => o.order_id),
             financialImpactBRL: round2(totalAuto * 9.0),
-            details: `Regra A (Entregues encerrados): ${autoEncerrados} • Regra B (Link Pix 24h + trava expedição): ${autoPix} • Regra C (Falso atraso dias corridos): ${autoFalsoAtraso}. Economia imediata de ${((totalAuto * 12) / 60).toFixed(1)} horas humanas e R$ ${(totalAuto * 9).toFixed(2)} em contatos evitados.`,
+            details: `Já entregues: ${autoEncerrados} • Pix 24h: ${autoPix} • No prazo real: ${autoFalsoAtraso}.`,
           });
         }
       );
@@ -166,11 +166,11 @@ export async function ingestNewOrders(
       actor: "motor_deterministico",
       actionTitle:
         source === "manual"
-          ? `Ingestão de Novo Pedido (${records[0]?.order_id})`
-          : `Importação de Lote CSV (${records.length} pedidos)`,
+          ? `Novo pedido (${records[0]?.order_id})`
+          : `Importação CSV (${records.length} pedidos)`,
       targetIds: records.slice(0, 10).map((r) => r.order_id),
       financialImpactBRL: round2(autoTriaged * 9.0),
-      details: `${records.length} registro(s) processado(s): ${autoTriaged} resolvido(s) sem fila na Auto-Triagem e ${activeAdded} posicionado(s) dinamicamente por R$ em Risco.`,
+      details: `${autoTriaged} resolvido(s) na triagem • ${activeAdded} enviado(s) para a fila.`,
     });
   });
 

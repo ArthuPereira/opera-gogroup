@@ -136,10 +136,9 @@ export interface IngestPreset {
 export const QUICK_INGEST_PRESETS: IngestPreset[] = [
   {
     id: "preset_auto_delivered",
-    badge: "Auto-Triagem",
-    title: "1. Atraso já entregue (Zero-Toque)",
-    expectedBehavior:
-      "Interceptado imediatamente pela Regra A (auto_encerrado_entregue): não ocupa nenhuma das 150 vagas humanas.",
+    badge: "Entregue",
+    title: "Já entregue",
+    expectedBehavior: "Encerrado na triagem automática.",
     order: {
       orderPrefix: "GB",
       customer_id: "CL300021",
@@ -166,10 +165,9 @@ export const QUICK_INGEST_PRESETS: IngestPreset[] = [
   },
   {
     id: "preset_vip_lote_b",
-    badge: "VIP + Lote L2607-B",
-    title: "2. Cliente VIP c/ Vazamento Lote L2607-B",
-    expectedBehavior:
-      "Sobe para o topo por R$ + LTV VIP (CL300014) e aplica trava proibindo separar do lote L2607-B (APC-1067).",
+    badge: "VIP",
+    title: "VIP • Vazamento L2607-B",
+    expectedBehavior: "Prioridade VIP com bloqueio de lote.",
     order: {
       orderPrefix: "GB",
       customer_id: "CL300014",
@@ -196,10 +194,9 @@ export const QUICK_INGEST_PRESETS: IngestPreset[] = [
   },
   {
     id: "preset_gocase_imp02",
-    badge: "Produção CD1",
-    title: "3. Capinha Gocase na IMP-02",
-    expectedBehavior:
-      "Detecta gargalo industrial da IMP-02 e roteia reimpressão para IMP-01/IMP-03 com inspeção óptica.",
+    badge: "IMP-02",
+    title: "Gocase • IMP-02",
+    expectedBehavior: "Redireciona impressão para IMP-01/03.",
     order: {
       orderPrefix: "GC",
       customer_id: "CL309198",
@@ -226,10 +223,9 @@ export const QUICK_INGEST_PRESETS: IngestPreset[] = [
   },
   {
     id: "preset_ne_extravio",
-    badge: "Nordeste + Sinistro",
-    title: "4. Extravio no Nordeste via Rota Express",
-    expectedBehavior:
-      "Migra reenvio de Rota Express para Veloz Log em CE (+R$ 3,22, mesmo SLA 6d) e abre Ressarcimento contra a transportadora.",
+    badge: "Extravio NE",
+    title: "Extravio • Rota Express CE",
+    expectedBehavior: "Migra p/ Veloz Log e abre sinistro.",
     order: {
       orderPrefix: "GB",
       customer_id: "CL303045",

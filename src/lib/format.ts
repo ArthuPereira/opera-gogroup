@@ -25,26 +25,26 @@ export function formatBRL(value: number, compact = false): string {
 
 export const EXCEPTION_LABELS: Record<ExceptionType, string> = {
   atraso_entrega: "Atraso de Entrega",
-  extravio: "Extravio em Trânsito",
+  extravio: "Extravio",
   rastreio_parado: "Rastreio Parado",
-  devolvido_transportadora: "Devolvido Transportadora",
-  avaria_transporte: "Avaria no Transporte",
-  vazamento_produto: "Vazamento de Produto",
-  item_faltante: "Item / Brinde Faltante",
-  falha_personalizacao: "Falha de Personalização",
-  pagamento_pendente: "Pagamento Pendente",
-  ruptura_pos_venda: "Ruptura Pós-Venda",
+  devolvido_transportadora: "Devolvido",
+  avaria_transporte: "Avaria",
+  vazamento_produto: "Vazamento",
+  item_faltante: "Item Faltante",
+  falha_personalizacao: "Personalização",
+  pagamento_pendente: "Pagto. Pendente",
+  ruptura_pos_venda: "Ruptura",
   endereco_divergente: "Endereço Divergente",
 };
 
 export const ACTION_LABELS: Record<RecommendedActionType, string> = {
-  reenvio_prioritario: "Reenvio Prioritário Seguro",
-  reexpedicao_sem_cmv: "Reexpedição Sem Novo CMV (0% CMV)",
-  voucher_credito: "Voucher / Crédito Instantâneo (Frete R$ 0)",
-  reembolso_direto: "Reembolso Integral",
-  cobranca_pix_expiracao: "Disparo Automático Pix 24h",
-  encerrar_entregue: "Encerramento Automático (Entregue)",
-  monitorar_no_prazo: "Notificação Proativa (Prazo Real Vigente)",
+  reenvio_prioritario: "Reenvio Prioritário",
+  reexpedicao_sem_cmv: "Reexpedição (Sem CMV)",
+  voucher_credito: "Voucher / Crédito",
+  reembolso_direto: "Reembolso",
+  cobranca_pix_expiracao: "Cobrança Pix 24h",
+  encerrar_entregue: "Encerrado (Entregue)",
+  monitorar_no_prazo: "No Prazo Real",
 };
 
 export const AUTO_TRIAGE_LABELS: Record<
@@ -52,20 +52,27 @@ export const AUTO_TRIAGE_LABELS: Record<
   { title: string; badge: string; color: string }
 > = {
   auto_encerrado_entregue: {
-    title: "Regra A • Entregue Encerrado",
+    title: "Já Entregues",
     badge: "Já Entregue",
     color: "bg-emerald-50 text-emerald-700 border-emerald-200",
   },
   auto_cobranca_pix: {
-    title: "Regra B • Link Pix 24h / Trava Estoque",
-    badge: "Cobrança Pix",
+    title: "Pix Pendente",
+    badge: "Pix 24h",
     color: "bg-sky-50 text-sky-700 border-sky-200",
   },
   auto_aviso_falso_atraso: {
-    title: "Regra C • Falso Atraso (Bug Dias Corridos)",
-    badge: "Dentro do SLA Útil",
+    title: "No Prazo Útil",
+    badge: "No Prazo",
     color: "bg-violet-50 text-violet-700 border-violet-200",
   },
+};
+
+export const ACTOR_LABELS: Record<string, string> = {
+  motor_deterministico: "Sistema",
+  agente_ia_aprovado: "IA + Operador",
+  operador_manual: "Operador",
+  radar_sistemico: "Bloqueio Operacional",
 };
 
 export function formatIsoDateBR(iso: string | null | undefined): string {
